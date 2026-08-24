@@ -1,0 +1,6 @@
+node_modules/
+dist/
+.env
+config.json
+.cli-wrapper-workspace/
+activity-log.json

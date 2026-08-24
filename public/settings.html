@@ -1,0 +1,376 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>cli-wrapper settings</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 900px; margin: 2rem auto; padding: 0 1rem; color: #1a1a1a; }
+  h1 { font-size: 1.4rem; }
+  table { width: 100%; border-collapse: collapse; margin-bottom: 1.5rem; }
+  th, td { text-align: left; padding: 0.5rem; border-bottom: 1px solid #ddd; font-size: 0.9rem; }
+  th { background: #f5f5f5; }
+  form { display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem; padding: 1rem; border: 1px solid #ddd; border-radius: 6px; }
+  form label { display: flex; flex-direction: column; font-size: 0.85rem; gap: 0.25rem; }
+  form input, form select { padding: 0.4rem; font-size: 0.9rem; }
+  form .full { grid-column: 1 / -1; }
+  button { cursor: pointer; padding: 0.4rem 0.8rem; }
+  .row-actions button { margin-right: 0.4rem; }
+  #status { min-height: 1.2rem; font-size: 0.85rem; color: #b00; margin-bottom: 0.5rem; }
+  .section-header { display: flex; align-items: center; justify-content: space-between; margin-top: 2.5rem; }
+  .section-header h2 { margin-bottom: 0; }
+  .log-controls { display: flex; align-items: center; gap: 0.75rem; font-size: 0.85rem; }
+  .log-controls label { display: flex; align-items: center; gap: 0.3rem; }
+  td.error-cell { max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #b00; cursor: help; }
+  .badge { display: inline-block; padding: 0.1rem 0.5rem; border-radius: 999px; font-size: 0.75rem; font-weight: 600; }
+  .badge-success { background: #e3f7e8; color: #1a7a34; }
+  .badge-error { background: #fbe3e3; color: #a71d1d; }
+  .badge-timeout { background: #fff3cd; color: #8a6300; }
+  #logs-empty { font-size: 0.85rem; color: #888; padding: 0.5rem 0; }
+  dialog#log-dialog { width: 90%; max-width: 720px; border: 1px solid #ddd; border-radius: 8px; padding: 1.25rem; }
+  dialog#log-dialog::backdrop { background: rgba(0,0,0,0.4); }
+  dialog#log-dialog h3 { margin-top: 0; }
+  dialog#log-dialog h4 { margin-bottom: 0.3rem; font-size: 0.85rem; color: #555; }
+  dialog#log-dialog pre { white-space: pre-wrap; word-break: break-word; max-height: 240px; overflow: auto; background: #f5f5f5; padding: 0.6rem; border-radius: 4px; font-size: 0.85rem; margin-top: 0; }
+  #log-dialog-meta { font-size: 0.8rem; color: #666; margin-bottom: 1rem; }
+  #log-dialog-error-block { display: none; }
+  #log-dialog-error-block pre { background: #fbe3e3; color: #a71d1d; }
+</style>
+</head>
+<body>
+<h1>Model routing</h1>
+<p id="status"></p>
+<table>
+  <thead>
+    <tr><th>id</th><th>provider</th><th>cliModel</th><th>extraFlags</th><th>description</th><th></th></tr>
+  </thead>
+  <tbody id="rows"></tbody>
+</table>
+
+<h2 id="form-title">Add model mapping</h2>
+<form id="form">
+  <label class="full">id
+    <input type="text" name="id" required />
+  </label>
+  <label>provider
+    <select name="provider">
+      <option value="claude">claude</option>
+      <option value="codex">codex</option>
+    </select>
+  </label>
+  <label>cliModel
+    <input type="text" name="cliModel" required />
+  </label>
+  <label class="full">extraFlags (comma-separated)
+    <input type="text" name="extraFlags" />
+  </label>
+  <label class="full">description
+    <input type="text" name="description" />
+  </label>
+  <div class="full">
+    <button type="submit" id="submit-btn">Add</button>
+    <button type="button" id="cancel-btn" style="display:none">Cancel edit</button>
+  </div>
+</form>
+
+<div class="section-header">
+  <h2>Recent activity</h2>
+  <div class="log-controls">
+    <label><input type="checkbox" id="auto-refresh" checked /> Auto-refresh</label>
+    <button type="button" id="logs-refresh-btn">Refresh</button>
+    <button type="button" id="logs-clear-btn">Clear</button>
+  </div>
+</div>
+<p style="font-size:0.8rem;color:#888;margin-top:-0.5rem;">
+  Last 200 requests.
+  <span id="persistence-note"></span>
+  <span id="content-capture-note"></span>
+</p>
+<table>
+  <thead>
+    <tr><th>time</th><th>model</th><th>provider</th><th>stream</th><th>status</th><th>duration</th><th>tokens</th><th>error</th><th></th></tr>
+  </thead>
+  <tbody id="log-rows"></tbody>
+</table>
+<p id="logs-empty" style="display:none">No requests logged yet.</p>
+
+<dialog id="log-dialog">
+  <h3 id="log-dialog-title">Request detail</h3>
+  <div id="log-dialog-meta"></div>
+  <div id="log-dialog-error-block">
+    <h4>Error</h4>
+    <pre id="log-dialog-error"></pre>
+  </div>
+  <h4>Input (sent to the CLI)</h4>
+  <pre id="log-dialog-input"></pre>
+  <h4>Output</h4>
+  <pre id="log-dialog-output"></pre>
+  <div style="text-align:right;margin-top:0.75rem;">
+    <button type="button" id="log-dialog-close">Close</button>
+  </div>
+</dialog>
+
+<script>
+const token = new URLSearchParams(location.search).get("token") || "";
+function withToken(url) {
+  const u = new URL(url, location.href);
+  if (token) u.searchParams.set("token", token);
+  return u.toString();
+}
+const statusEl = document.getElementById("status");
+const rowsEl = document.getElementById("rows");
+const form = document.getElementById("form");
+const submitBtn = document.getElementById("submit-btn");
+const cancelBtn = document.getElementById("cancel-btn");
+const formTitle = document.getElementById("form-title");
+let editingId = null;
+
+function setStatus(msg) { statusEl.textContent = msg || ""; }
+
+async function api(path, opts) {
+  const res = await fetch(withToken(path), {
+    ...opts,
+    headers: { "Content-Type": "application/json", ...(opts && opts.headers) },
+  });
+  if (!res.ok) {
+    let body;
+    try { body = await res.json(); } catch { body = null; }
+    throw new Error((body && body.error && body.error.message) || `Request failed: ${res.status}`);
+  }
+  if (res.status === 204) return null;
+  return res.json();
+}
+
+function renderRows(models) {
+  rowsEl.innerHTML = "";
+  for (const m of models) {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `
+      <td>${escapeHtml(m.id)}</td>
+      <td>${escapeHtml(m.provider)}</td>
+      <td>${escapeHtml(m.cliModel)}</td>
+      <td>${escapeHtml((m.extraFlags || []).join(", "))}</td>
+      <td>${escapeHtml(m.description || "")}</td>
+      <td class="row-actions">
+        <button data-edit="${encodeURIComponent(m.id)}">Edit</button>
+        <button data-delete="${encodeURIComponent(m.id)}">Delete</button>
+      </td>
+    `;
+    rowsEl.appendChild(tr);
+  }
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+
+let cachedModels = [];
+
+async function refresh() {
+  try {
+    cachedModels = await api("/api/settings/models");
+    renderRows(cachedModels);
+    setStatus("");
+  } catch (err) {
+    setStatus(err.message);
+  }
+}
+
+function resetForm() {
+  form.reset();
+  editingId = null;
+  submitBtn.textContent = "Add";
+  formTitle.textContent = "Add model mapping";
+  cancelBtn.style.display = "none";
+}
+
+form.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const fd = new FormData(form);
+  const payload = {
+    id: fd.get("id").trim(),
+    provider: fd.get("provider"),
+    cliModel: fd.get("cliModel").trim(),
+    extraFlags: fd.get("extraFlags").trim() ? fd.get("extraFlags").split(",").map((s) => s.trim()).filter(Boolean) : undefined,
+    description: fd.get("description").trim() || undefined,
+  };
+  try {
+    if (editingId) {
+      await api(`/api/settings/models/${encodeURIComponent(editingId)}`, { method: "PUT", body: JSON.stringify(payload) });
+    } else {
+      await api("/api/settings/models", { method: "POST", body: JSON.stringify(payload) });
+    }
+    resetForm();
+    await refresh();
+  } catch (err) {
+    setStatus(err.message);
+  }
+});
+
+cancelBtn.addEventListener("click", resetForm);
+
+rowsEl.addEventListener("click", async (e) => {
+  const editId = e.target.getAttribute("data-edit");
+  const deleteId = e.target.getAttribute("data-delete");
+  if (editId) {
+    const id = decodeURIComponent(editId);
+    const m = cachedModels.find((x) => x.id === id);
+    if (!m) return;
+    editingId = id;
+    form.id.value = m.id;
+    form.provider.value = m.provider;
+    form.cliModel.value = m.cliModel;
+    form.extraFlags.value = (m.extraFlags || []).join(", ");
+    form.description.value = m.description || "";
+    submitBtn.textContent = "Save";
+    formTitle.textContent = `Edit "${id}"`;
+    cancelBtn.style.display = "inline-block";
+  } else if (deleteId) {
+    const id = decodeURIComponent(deleteId);
+    if (!confirm(`Delete model mapping "${id}"?`)) return;
+    try {
+      await api(`/api/settings/models/${encodeURIComponent(id)}`, { method: "DELETE" });
+      await refresh();
+    } catch (err) {
+      setStatus(err.message);
+    }
+  }
+});
+
+refresh();
+
+// --- Recent activity (event/log viewer) ---
+
+const logRowsEl = document.getElementById("log-rows");
+const logsEmptyEl = document.getElementById("logs-empty");
+const autoRefreshEl = document.getElementById("auto-refresh");
+const logsRefreshBtn = document.getElementById("logs-refresh-btn");
+const logsClearBtn = document.getElementById("logs-clear-btn");
+
+function fmtTime(ms) {
+  return new Date(ms).toLocaleTimeString();
+}
+
+function fmtDuration(ms) {
+  return ms < 1000 ? `${ms}ms` : `${(ms / 1000).toFixed(1)}s`;
+}
+
+function fmtTokens(usage) {
+  if (!usage) return "";
+  return `${usage.promptTokens}→${usage.completionTokens} (${usage.totalTokens})`;
+}
+
+function badgeFor(status) {
+  const cls = status === "success" ? "badge-success" : status === "timeout" ? "badge-timeout" : "badge-error";
+  return `<span class="badge ${cls}">${escapeHtml(status)}</span>`;
+}
+
+let cachedLogs = [];
+
+function renderLogs(entries) {
+  cachedLogs = entries;
+  logRowsEl.innerHTML = "";
+  logsEmptyEl.style.display = entries.length ? "none" : "block";
+  for (const e of entries) {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `
+      <td>${escapeHtml(fmtTime(e.timestamp))}</td>
+      <td>${escapeHtml(e.model)}</td>
+      <td>${escapeHtml(e.provider)}</td>
+      <td>${e.stream ? "yes" : "no"}</td>
+      <td>${badgeFor(e.status)}</td>
+      <td>${escapeHtml(fmtDuration(e.durationMs))}</td>
+      <td>${escapeHtml(fmtTokens(e.usage))}</td>
+      <td class="error-cell" title="${escapeHtml(e.error || "")}">${escapeHtml(e.error || "")}</td>
+      <td><button data-view="${encodeURIComponent(e.id)}">View</button></td>
+    `;
+    logRowsEl.appendChild(tr);
+  }
+}
+
+const logDialog = document.getElementById("log-dialog");
+const logDialogTitle = document.getElementById("log-dialog-title");
+const logDialogMeta = document.getElementById("log-dialog-meta");
+const logDialogInput = document.getElementById("log-dialog-input");
+const logDialogOutput = document.getElementById("log-dialog-output");
+const logDialogErrorBlock = document.getElementById("log-dialog-error-block");
+const logDialogError = document.getElementById("log-dialog-error");
+document.getElementById("log-dialog-close").addEventListener("click", () => logDialog.close());
+
+function openLogDialog(entry) {
+  logDialogTitle.textContent = `${entry.model} — ${entry.status}`;
+  logDialogMeta.textContent =
+    `${new Date(entry.timestamp).toLocaleString()} · ${entry.provider} · ` +
+    `${entry.stream ? "streaming" : "non-streaming"} · ${fmtDuration(entry.durationMs)}` +
+    (entry.usage ? ` · ${fmtTokens(entry.usage)} tokens` : "");
+  if (entry.error) {
+    logDialogErrorBlock.style.display = "block";
+    logDialogError.textContent = entry.error;
+  } else {
+    logDialogErrorBlock.style.display = "none";
+  }
+  logDialogInput.textContent = entry.input || "(not recorded)";
+  logDialogOutput.textContent = entry.output || "(none)";
+  logDialog.showModal();
+}
+
+logRowsEl.addEventListener("click", (e) => {
+  const viewId = e.target.getAttribute("data-view");
+  if (!viewId) return;
+  const id = decodeURIComponent(viewId);
+  const entry = cachedLogs.find((x) => x.id === id);
+  if (entry) openLogDialog(entry);
+});
+
+async function refreshLogs() {
+  try {
+    const entries = await api("/api/settings/logs");
+    renderLogs(entries);
+  } catch (err) {
+    setStatus(err.message);
+  }
+}
+
+logsRefreshBtn.addEventListener("click", refreshLogs);
+
+logsClearBtn.addEventListener("click", async () => {
+  if (!confirm("Clear the activity log?")) return;
+  try {
+    await api("/api/settings/logs", { method: "DELETE" });
+    await refreshLogs();
+  } catch (err) {
+    setStatus(err.message);
+  }
+});
+
+let logPollTimer = null;
+function startLogPolling() {
+  stopLogPolling();
+  logPollTimer = setInterval(refreshLogs, 4000);
+}
+function stopLogPolling() {
+  if (logPollTimer) clearInterval(logPollTimer);
+  logPollTimer = null;
+}
+autoRefreshEl.addEventListener("change", () => {
+  if (autoRefreshEl.checked) startLogPolling();
+  else stopLogPolling();
+});
+
+const contentCaptureNoteEl = document.getElementById("content-capture-note");
+const persistenceNoteEl = document.getElementById("persistence-note");
+api("/api/settings/meta")
+  .then((meta) => {
+    contentCaptureNoteEl.textContent = meta.logCaptureContent
+      ? " Full prompt/response content is captured (LOG_CAPTURE_CONTENT=true)."
+      : " Prompt/response content capture is disabled (LOG_CAPTURE_CONTENT=false) — only metadata is shown below.";
+    persistenceNoteEl.textContent = meta.logPersistence && meta.logPersistence.enabled
+      ? ` Persisted to ${meta.logPersistence.path} — survives a restart.`
+      : " In-memory only — cleared on server restart (set LOG_FILE_PATH to persist).";
+  })
+  .catch(() => {}); // non-critical; leave the notes blank on failure
+
+refreshLogs();
+if (autoRefreshEl.checked) startLogPolling();
+</script>
+</body>
+</html>
