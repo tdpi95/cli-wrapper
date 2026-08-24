@@ -41,7 +41,30 @@ src/
     types.ts         subset of the OpenAI request/response/chunk shapes we implement
     transform.ts     RunResult/StreamChunk -> OpenAI JSON / SSE lines
 public/settings.html  the entire settings UI — plain HTML/CSS/vanilla JS, no build step
+bin/cli-wrapper.js    uncompiled `bin` entrypoint (shebang + `import "../dist/server.js"`),
+                     so `npm pack`/`npm install -g` produces a real `cli-wrapper` command
 ```
+
+## Packaging / distribution
+
+`package.json`'s `files` field whitelists exactly what ships in `npm pack`/`npm install -g`:
+`bin/`, `dist/` (build output — `prepack` runs `npm run build` automatically), `public/`,
+`config.example.json`, `.env.example`, `README.md`. Notably NOT `src/`, `PLAN.md`,
+`AGENTS.md`, `CLAUDE.md` — those stay in the git repo but don't need to ship to a runtime
+install. This assumes the target machine already has Node.js (a safe assumption here since
+`claude`/`codex` themselves are npm-distributed CLIs) and npm registry access at install
+time (to resolve `express`/`dotenv` — the tarball doesn't vendor `node_modules`). See
+README's "Shipping to another machine" for the actual commands.
+
+If a target machine truly has no Node.js and a real standalone native executable is ever
+needed instead: bundle with `esbuild` into a single file first (this app's ESM + `NodeNext`
+module resolution won't feed directly into most packagers), then either use Node's built-in
+Single Executable Application feature (must build per-OS/arch, no cross-compiling — you'd
+need CI runners or machines for each target platform) or a maintained fork like
+`@yao-pkg/pkg` (can cross-compile from one machine, but historically shakier with ESM than
+CJS — may need the esbuild output to target CJS). Not started; nobody has asked for it yet
+and it's meaningfully more moving parts than the current `npm pack` approach for no benefit
+given the Node.js-is-already-required assumption above.
 
 ## Conventions worth preserving
 

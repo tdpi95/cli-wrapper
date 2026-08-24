@@ -4,3 +4,4 @@ dist/
 config.json
 .cli-wrapper-workspace/
 activity-log.json
+*.tgz
