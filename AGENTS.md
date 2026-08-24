@@ -17,16 +17,23 @@ array is flattened into a single prompt and a brand-new CLI process is spawned p
 
 ```
 src/
-  server.ts          entrypoint — env, config seeding, workdir creation, listen
-  app.ts             express app assembly + auth middleware wiring (path-scoped, see below)
-  env.ts             process.env -> Env, exits the process if WRAPPER_API_KEY is missing
-  auth.ts            bearer-token check (header, or ?token= when allowQueryToken is set)
+  server.ts          entrypoint — env (just CONFIG_PATH/PORT), config init, workdir, listen
+  app.ts             express app assembly + auth middleware wiring (path-scoped, /v1 only)
+  env.ts             process.env -> Env: only CONFIG_PATH and an optional PORT override —
+                     everything else moved into config.json's `settings` (see config.ts)
+  auth.ts            bearer-token check on a live getter (config.getSettings().apiKey), so
+                     a key edited on /settings takes effect on the very next request
   config.ts          config.json load (fresh read every call)/save (atomic tmp+rename)/CRUD
+                     for both `settings` (server config) and `models` (routing table);
+                     initConfig() also seeds a fresh config.json on first run, migrates a
+                     pre-settings (version 1) file in place, and generates a random apiKey
+                     if one isn't already set — see the "Settings has no auth" section below
   errors.ts          tagged error classes + toApiError() -> OpenAI-shaped {status, body}
   logs.ts            ring buffer of chat-completion request events (for /settings); optional
-                     file persistence via initLogPersistence(env.logFilePath) at startup
+                     file persistence via initLogPersistence() at startup, retargetable at
+                     runtime via setLogPersistPath() when the settings page changes it
   transcript.ts       flattenMessages(): OpenAI messages[] -> {systemPrompt, transcript}
-  types/config.ts    ModelMapping / WrapperConfig types
+  types/config.ts    ModelMapping / WrapperSettings / WrapperConfig types
   providers/
     types.ts         CliProvider interface shared by both backends
     claude.ts        spawns `claude -p`, parses its JSON / stream-json output
@@ -78,9 +85,37 @@ given the Node.js-is-already-required assumption above.
 - **`config.ts` reads `config.json` fresh on every call.** No cache, no `fs.watch`. This is
   intentional — the file is tiny and read once per HTTP request, and "always read fresh"
   is simpler to reason about than cache invalidation. Don't add caching without a reason.
+  This now applies to `settings` (apiKey/cliTimeoutMs/cliWorkdir/etc.) as much as `models`:
+  `chat.ts` calls `getSettings()` at the top of every request rather than reading a value
+  captured once at server startup, specifically so edits made on /settings apply to the
+  very next request with no restart.
 - **Auth is applied by URL path prefix in `app.ts`, never inside a router via a bare
   `router.use(authMw)`.** See the gotcha below for why — this one actually broke auth
   during development and is easy to reintroduce by accident when adding a new route group.
+  It's also now scoped to `/v1` only — see "Settings has no auth, by design" below.
+
+## Settings has no auth, by design
+
+`/settings` and `/api/settings/*` are mounted with no auth middleware at all (see `app.ts`)
+— this was an explicit request, not an oversight. Only `/v1/*` is guarded, by
+`bearerAuth(() => getSettings().apiKey)` in `auth.ts`, which re-reads the key from
+`config.json` on every request (not a value captured once at boot) so that changing the key
+on the settings page takes effect immediately, with no restart and no way to get locked out
+by an in-flight process holding a stale key.
+
+Consequences worth remembering when touching this code:
+- The settings page can read *and change* the very API key that protects `/v1/*` — there is
+  no separate credential protecting the settings surface itself. Don't add one without
+  removing this section; if that ever changes, the "no login required" framing throughout
+  the settings UI copy and README needs to change with it.
+- `config.ts`'s `initConfig()` never leaves `apiKey` empty on its own — on first run (or
+  migrating a pre-settings config) it generates a random one via `crypto.randomBytes` if the
+  seed/legacy env didn't supply one, and logs it once to the console. An empty `apiKey` (auth
+  fully disabled on `/v1/*`) only ever happens because someone explicitly blanked the field
+  on `/settings` and saved — never as a silent default.
+- Because there's no token gate, don't add anything to `/api/settings/*` that assumes the
+  caller is trusted beyond "can reach this HTTP server" — e.g. don't have it exec anything,
+  read arbitrary paths, etc.
 
 ## Gotchas already hit (verified live, not hypothetical — read before refactoring nearby code)
 
@@ -153,10 +188,11 @@ Roughly ordered by likely value; none of these are started.
 
 ### Correctness / robustness
 - **Concurrent `config.json` writes aren't mutex'd.** The atomic tmp-file+rename in
-  `config.ts` prevents corruption, but two near-simultaneous `POST`/`PUT`/`DELETE` calls to
-  `/api/settings/models` can still race (last-write-wins, one edit silently lost). A simple
-  in-process promise-chain mutex around `saveConfig` would close this; low cost, currently
-  skipped because the settings UI is single-operator by design.
+  `config.ts` prevents corruption, but two near-simultaneous writes — `PUT
+  /api/settings/config` racing a `POST`/`PUT`/`DELETE` on `/api/settings/models`, or two of
+  either — can still race (last-write-wins, one edit silently lost). A simple in-process
+  promise-chain mutex around `saveConfig` would close this; low cost, currently skipped
+  because the settings UI is single-operator by design.
 - **No automated tests.** `transcript.flattenMessages` and both providers' JSONL parsers
   are pure-ish and highly testable against recorded fixture output (several real JSONL
   transcripts are in this conversation's history and could seed fixtures) — currently only
@@ -168,9 +204,10 @@ Roughly ordered by likely value; none of these are started.
   actual OpenAI-client SDKs do when they receive that, and adjusting if it's mishandled
   (e.g. some clients may expect the stream to just end abruptly, or expect an `error`
   field alongside a `chat.completion.chunk` shape rather than instead of one).
-- **Shared `CLI_WORKDIR` across all concurrent requests.** Both CLIs are read-only/no-tools
-  so this hasn't caused an actual collision, but if tool access is ever enabled for either
-  provider (see below) this needs to become a per-request temp directory instead.
+- **Shared `settings.cliWorkdir` across all concurrent requests.** Both CLIs are
+  read-only/no-tools so this hasn't caused an actual collision, but if tool access is ever
+  enabled for either provider (see below) this needs to become a per-request temp directory
+  instead.
 
 ### Features
 - **Model discovery instead of hand-maintained `config.json`.** Could shell out to `codex
@@ -198,18 +235,24 @@ Roughly ordered by likely value; none of these are started.
   chat-completions only, no filtering/search in the UI). It stores full request/response
   content (`input`/`output` on `LogEntry`, viewable per-row in the settings UI via a "View"
   button) by default, meaning **sensitive conversation content sits in server memory** and
-  is readable by anyone with the settings token — see the callout in README.md.
-  `LOG_CAPTURE_CONTENT=false` (env.ts's `logCaptureContent`) disables this: `chat.ts` still
-  logs full metadata (model/provider/status/duration/usage) but omits `input`/`output`
-  entirely rather than truncating or redacting them.
-  Persistence is opt-in via `LOG_FILE_PATH` (env.ts's `logFilePath`): unset (default), the
-  buffer is exactly as before — in-memory only, nothing touches disk. Set, `logs.ts` loads
-  the file at startup (`initLogPersistence`, called once from `server.ts`) and rewrites the
-  whole (still ≤200-entry) buffer to it — atomically, tmp+rename like `config.ts` — after
-  every `addLogEntry`/`clearLogEntries` call. A write failure is logged and swallowed
-  (`persist()` never throws into the request path); a corrupt/unreadable file at startup
-  logs a warning and starts from an empty log rather than crashing. Both flags surface via
-  `GET /api/settings/meta`, shown live on the settings page. **If both are on, the log file
+  is readable by anyone who can reach `/settings` at all — see "Settings has no auth" above
+  and the callout in README.md. Turning off `settings.logCaptureContent` (settings page
+  checkbox, or `PUT /api/settings/config`) disables this: `chat.ts` still logs full metadata
+  (model/provider/status/duration/usage) but omits `input`/`output` entirely rather than
+  truncating or redacting them.
+  Persistence is opt-in via `settings.logFilePath` (settings page field, or `PUT
+  /api/settings/config`): `null`/unset (default), the buffer is exactly as before —
+  in-memory only, nothing touches disk. Set at startup, `logs.ts` loads the file
+  (`initLogPersistence`, called once from `server.ts`) and rewrites the whole (still
+  ≤200-entry) buffer to it — atomically, tmp+rename like `config.ts` — after every
+  `addLogEntry`/`clearLogEntries` call. Changed later at runtime via the settings page,
+  `settings.ts`'s PUT handler calls `setLogPersistPath()` instead, which switches the target
+  path and writes the current buffer there immediately, deliberately *without* loading
+  that file's prior contents (avoids double-counting entries — see the comment on
+  `setLogPersistPath`). A write failure is logged and swallowed (`persist()` never throws
+  into the request path); a corrupt/unreadable file at startup logs a warning and starts
+  from an empty log rather than crashing. Both settings surface via `GET
+  /api/settings/meta`, shown live on the settings page. **If both are on, the log file
   contains full plaintext conversation content on disk** — treat it like any other secret,
   keep it out of version control (already in `.gitignore` for the suggested default name).
   Reasonable next steps if this needs to grow further: rotate/cap the file by size instead

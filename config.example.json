@@ -1,5 +1,13 @@
 {
-  "version": 1,
+  "version": 2,
+  "settings": {
+    "apiKey": "",
+    "port": 8868,
+    "cliTimeoutMs": 120000,
+    "cliWorkdir": "./.cli-wrapper-workspace",
+    "logCaptureContent": true,
+    "logFilePath": null
+  },
   "models": [
     {
       "id": "claude-sonnet-5",

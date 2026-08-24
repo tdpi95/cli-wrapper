@@ -2,96 +2,273 @@
 <html lang="en">
 <head>
 <meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>cli-wrapper settings</title>
 <style>
-  body { font-family: system-ui, sans-serif; max-width: 900px; margin: 2rem auto; padding: 0 1rem; color: #1a1a1a; }
-  h1 { font-size: 1.4rem; }
-  table { width: 100%; border-collapse: collapse; margin-bottom: 1.5rem; }
-  th, td { text-align: left; padding: 0.5rem; border-bottom: 1px solid #ddd; font-size: 0.9rem; }
-  th { background: #f5f5f5; }
-  form { display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem; padding: 1rem; border: 1px solid #ddd; border-radius: 6px; }
-  form label { display: flex; flex-direction: column; font-size: 0.85rem; gap: 0.25rem; }
-  form input, form select { padding: 0.4rem; font-size: 0.9rem; }
-  form .full { grid-column: 1 / -1; }
-  button { cursor: pointer; padding: 0.4rem 0.8rem; }
-  .row-actions button { margin-right: 0.4rem; }
-  #status { min-height: 1.2rem; font-size: 0.85rem; color: #b00; margin-bottom: 0.5rem; }
-  .section-header { display: flex; align-items: center; justify-content: space-between; margin-top: 2.5rem; }
-  .section-header h2 { margin-bottom: 0; }
-  .log-controls { display: flex; align-items: center; gap: 0.75rem; font-size: 0.85rem; }
-  .log-controls label { display: flex; align-items: center; gap: 0.3rem; }
-  td.error-cell { max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #b00; cursor: help; }
-  .badge { display: inline-block; padding: 0.1rem 0.5rem; border-radius: 999px; font-size: 0.75rem; font-weight: 600; }
-  .badge-success { background: #e3f7e8; color: #1a7a34; }
-  .badge-error { background: #fbe3e3; color: #a71d1d; }
-  .badge-timeout { background: #fff3cd; color: #8a6300; }
-  #logs-empty { font-size: 0.85rem; color: #888; padding: 0.5rem 0; }
-  dialog#log-dialog { width: 90%; max-width: 720px; border: 1px solid #ddd; border-radius: 8px; padding: 1.25rem; }
-  dialog#log-dialog::backdrop { background: rgba(0,0,0,0.4); }
+  :root {
+    color-scheme: light dark;
+    --bg: #f6f7f9;
+    --card: #ffffff;
+    --border: #e2e5ea;
+    --text: #1a1d23;
+    --text-dim: #6b7280;
+    --text-faint: #9aa1ac;
+    --accent: #3457d5;
+    --accent-hover: #2743ad;
+    --danger: #b91c1c;
+    --danger-bg: #fdecec;
+    --success-text: #157a3d;
+    --success-bg: #e6f7ec;
+    --warn-text: #8a6300;
+    --warn-bg: #fff6df;
+    --warn-border: #f0d98c;
+    --input-bg: #ffffff;
+    --code-bg: #f1f2f5;
+    --shadow: 0 1px 2px rgba(16, 24, 40, 0.05);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #14161a;
+      --card: #1c1f26;
+      --border: #2c313b;
+      --text: #e7e9ee;
+      --text-dim: #9aa1ac;
+      --text-faint: #6b7280;
+      --accent: #6c8bff;
+      --accent-hover: #8aa2ff;
+      --danger: #f57171;
+      --danger-bg: #3a1e1e;
+      --success-text: #59d68a;
+      --success-bg: #163826;
+      --warn-text: #e0b74e;
+      --warn-bg: #3a3016;
+      --warn-border: #5a4a1e;
+      --input-bg: #12141a;
+      --code-bg: #12141a;
+      --shadow: none;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    max-width: 980px;
+    margin: 0 auto;
+    padding: 2rem 1.25rem 4rem;
+    line-height: 1.45;
+  }
+  h1 { font-size: 1.5rem; margin: 0 0 0.25rem; }
+  h2 { font-size: 1.05rem; margin: 0; }
+  h3 { font-size: 0.95rem; margin: 0 0 0.6rem; }
+  .subtitle { color: var(--text-dim); font-size: 0.9rem; margin: 0 0 1.25rem; }
+  .card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 1.25rem;
+    margin-bottom: 1.75rem;
+    box-shadow: var(--shadow);
+  }
+  .card-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+    margin-bottom: 1rem;
+    flex-wrap: wrap;
+  }
+  .card-header p { margin: 0.2rem 0 0; color: var(--text-dim); font-size: 0.82rem; }
+  details.card > summary { cursor: pointer; list-style: none; }
+  details.card > summary::-webkit-details-marker { display: none; }
+  details.card:not([open]) > summary.card-header { margin-bottom: 0; }
+  details.card .chevron { color: var(--text-faint); font-size: 0.85rem; transition: transform 0.15s ease; flex-shrink: 0; }
+  details.card[open] .chevron { transform: rotate(90deg); }
+  table { width: 100%; border-collapse: collapse; font-size: 0.87rem; }
+  th, td { text-align: left; padding: 0.55rem 0.5rem; border-bottom: 1px solid var(--border); }
+  th { color: var(--text-dim); font-weight: 600; font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.02em; }
+  tbody tr:hover { background: color-mix(in srgb, var(--accent) 5%, transparent); }
+  .table-wrap { overflow-x: auto; }
+  code, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.85em; }
+  form.grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0.85rem; }
+  form.grid label { display: flex; flex-direction: column; font-size: 0.82rem; gap: 0.3rem; color: var(--text-dim); }
+  form.grid label .hint { font-size: 0.75rem; color: var(--text-faint); font-weight: 400; }
+  form.grid .full { grid-column: 1 / -1; }
+  form.grid .row { display: flex; gap: 0.5rem; align-items: stretch; }
+  input, select {
+    padding: 0.5rem 0.6rem;
+    font-size: 0.88rem;
+    border: 1px solid var(--border);
+    border-radius: 7px;
+    background: var(--input-bg);
+    color: var(--text);
+    width: 100%;
+    font-family: inherit;
+  }
+  input:focus, select:focus { outline: 2px solid color-mix(in srgb, var(--accent) 50%, transparent); outline-offset: 1px; border-color: var(--accent); }
+  input[type="checkbox"] { width: auto; }
+  label.checkbox-row { flex-direction: row !important; align-items: center; gap: 0.5rem !important; }
+  button {
+    cursor: pointer;
+    padding: 0.5rem 0.9rem;
+    font-size: 0.85rem;
+    border-radius: 7px;
+    border: 1px solid var(--border);
+    background: var(--card);
+    color: var(--text);
+    font-family: inherit;
+    white-space: nowrap;
+  }
+  button:hover { border-color: var(--accent); color: var(--accent); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.primary:hover { background: var(--accent-hover); border-color: var(--accent-hover); color: #fff; }
+  button.danger:hover { border-color: var(--danger); color: var(--danger); }
+  button:disabled { opacity: 0.5; cursor: default; }
+  button:disabled:hover { border-color: var(--border); color: var(--text); }
+  .actions { display: flex; gap: 0.5rem; flex-wrap: wrap; }
+  .row-actions { display: flex; gap: 0.4rem; }
+  .row-actions button { padding: 0.3rem 0.6rem; font-size: 0.78rem; }
+  #status, #settings-status { min-height: 1.1rem; font-size: 0.82rem; color: var(--danger); margin: 0 0 0.75rem; }
+  .status-ok { color: var(--success-text) !important; }
+  .log-controls { display: flex; align-items: center; gap: 0.9rem; font-size: 0.82rem; color: var(--text-dim); flex-wrap: wrap; }
+  .log-controls label { display: flex; align-items: center; gap: 0.35rem; }
+  td.error-cell { max-width: 280px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--danger); cursor: help; font-size: 0.82rem; }
+  .badge { display: inline-block; padding: 0.15rem 0.55rem; border-radius: 999px; font-size: 0.72rem; font-weight: 600; }
+  .badge-success { background: var(--success-bg); color: var(--success-text); }
+  .badge-error { background: var(--danger-bg); color: var(--danger); }
+  .badge-timeout { background: var(--warn-bg); color: var(--warn-text); }
+  #logs-empty { font-size: 0.85rem; color: var(--text-faint); padding: 0.5rem 0; }
+  .notes { font-size: 0.78rem; color: var(--text-faint); margin: -0.4rem 0 0.9rem; }
+  dialog#log-dialog {
+    width: 90%; max-width: 720px; border: 1px solid var(--border); border-radius: 12px;
+    padding: 1.25rem; background: var(--card); color: var(--text);
+  }
+  dialog#log-dialog::backdrop { background: rgba(0,0,0,0.45); }
   dialog#log-dialog h3 { margin-top: 0; }
-  dialog#log-dialog h4 { margin-bottom: 0.3rem; font-size: 0.85rem; color: #555; }
-  dialog#log-dialog pre { white-space: pre-wrap; word-break: break-word; max-height: 240px; overflow: auto; background: #f5f5f5; padding: 0.6rem; border-radius: 4px; font-size: 0.85rem; margin-top: 0; }
-  #log-dialog-meta { font-size: 0.8rem; color: #666; margin-bottom: 1rem; }
+  dialog#log-dialog h4 { margin: 0.9rem 0 0.3rem; font-size: 0.8rem; color: var(--text-dim); }
+  dialog#log-dialog pre {
+    white-space: pre-wrap; word-break: break-word; max-height: 240px; overflow: auto;
+    background: var(--code-bg); padding: 0.6rem; border-radius: 6px; font-size: 0.82rem; margin: 0;
+  }
+  #log-dialog-meta { font-size: 0.8rem; color: var(--text-dim); margin-bottom: 0.5rem; }
   #log-dialog-error-block { display: none; }
-  #log-dialog-error-block pre { background: #fbe3e3; color: #a71d1d; }
+  #log-dialog-error-block pre { background: var(--danger-bg); color: var(--danger); }
+  .apikey-row { display: flex; gap: 0.5rem; }
+  .apikey-row input { flex: 1; }
+  .apikey-row button { flex-shrink: 0; }
+  footer { text-align: center; font-size: 0.75rem; color: var(--text-faint); margin-top: 2.5rem; }
 </style>
 </head>
 <body>
-<h1>Model routing</h1>
-<p id="status"></p>
-<table>
-  <thead>
-    <tr><th>id</th><th>provider</th><th>cliModel</th><th>extraFlags</th><th>description</th><th></th></tr>
-  </thead>
-  <tbody id="rows"></tbody>
-</table>
 
-<h2 id="form-title">Add model mapping</h2>
-<form id="form">
-  <label class="full">id
-    <input type="text" name="id" required />
-  </label>
-  <label>provider
-    <select name="provider">
-      <option value="claude">claude</option>
-      <option value="codex">codex</option>
-    </select>
-  </label>
-  <label>cliModel
-    <input type="text" name="cliModel" required />
-  </label>
-  <label class="full">extraFlags (comma-separated)
-    <input type="text" name="extraFlags" />
-  </label>
-  <label class="full">description
-    <input type="text" name="description" />
-  </label>
-  <div class="full">
-    <button type="submit" id="submit-btn">Add</button>
-    <button type="button" id="cancel-btn" style="display:none">Cancel edit</button>
-  </div>
-</form>
+<h1>cli-wrapper settings</h1>
+<p class="subtitle">Model routing, server configuration, and recent activity.</p>
 
-<div class="section-header">
-  <h2>Recent activity</h2>
-  <div class="log-controls">
-    <label><input type="checkbox" id="auto-refresh" checked /> Auto-refresh</label>
-    <button type="button" id="logs-refresh-btn">Refresh</button>
-    <button type="button" id="logs-clear-btn">Clear</button>
+<div class="card">
+  <div class="card-header">
+    <div>
+      <h2>Server settings</h2>
+      <p>Applies immediately on the next API request — except <strong>port</strong>, which needs a restart.</p>
+    </div>
   </div>
+  <p id="settings-status"></p>
+  <form class="grid" id="settings-form">
+    <label class="full"><span>API key (used for <code>Authorization: Bearer …</code> on /v1/*; blank disables auth on /v1 too)</span>
+      <div class="apikey-row">
+        <input type="text" name="apiKey" class="mono" placeholder="(none — /v1 is open)" />
+        <button type="button" id="regen-key-btn">Regenerate</button>
+      </div>
+    </label>
+    <label><span>Port <span class="hint">(requires restart)</span></span>
+      <input type="number" name="port" min="1" max="65535" required />
+    </label>
+    <label><span>CLI timeout (ms)</span>
+      <input type="number" name="cliTimeoutMs" min="1000" step="1000" required />
+    </label>
+    <label class="full"><span>CLI working directory</span>
+      <input type="text" name="cliWorkdir" class="mono" required />
+    </label>
+    <label class="full"><span>Log file path <span class="hint">(blank = in-memory only, cleared on restart)</span></span>
+      <input type="text" name="logFilePath" class="mono" placeholder="e.g. ./activity-log.json" />
+    </label>
+    <label class="checkbox-row full">
+      <input type="checkbox" name="logCaptureContent" />
+      Store full prompt/response text in the activity log (off = metadata only: model, status, duration, tokens)
+    </label>
+    <div class="full actions">
+      <button type="submit" class="primary">Save settings</button>
+    </div>
+  </form>
 </div>
-<p style="font-size:0.8rem;color:#888;margin-top:-0.5rem;">
-  Last 200 requests.
-  <span id="persistence-note"></span>
-  <span id="content-capture-note"></span>
-</p>
-<table>
-  <thead>
-    <tr><th>time</th><th>model</th><th>provider</th><th>stream</th><th>status</th><th>duration</th><th>tokens</th><th>error</th><th></th></tr>
-  </thead>
-  <tbody id="log-rows"></tbody>
-</table>
-<p id="logs-empty" style="display:none">No requests logged yet.</p>
+
+<details class="card">
+  <summary class="card-header">
+    <div><h2>Model routing</h2></div>
+    <span class="chevron" aria-hidden="true">▸</span>
+  </summary>
+  <p id="status"></p>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>id</th><th>provider</th><th>cliModel</th><th>extraFlags</th><th>description</th><th></th></tr>
+      </thead>
+      <tbody id="rows"></tbody>
+    </table>
+  </div>
+
+  <h3 id="form-title" style="margin-top:1.25rem;">Add model mapping</h3>
+  <form class="grid" id="form">
+    <label class="full">id
+      <input type="text" name="id" required />
+    </label>
+    <label>provider
+      <select name="provider">
+        <option value="claude">claude</option>
+        <option value="codex">codex</option>
+      </select>
+    </label>
+    <label>cliModel
+      <input type="text" name="cliModel" required />
+    </label>
+    <label class="full">extraFlags (comma-separated)
+      <input type="text" name="extraFlags" />
+    </label>
+    <label class="full">description
+      <input type="text" name="description" />
+    </label>
+    <div class="full actions">
+      <button type="submit" class="primary" id="submit-btn">Add</button>
+      <button type="button" id="cancel-btn" style="display:none">Cancel edit</button>
+    </div>
+  </form>
+</details>
+
+<div class="card">
+  <div class="card-header">
+    <div><h2>Recent activity</h2></div>
+    <div class="log-controls">
+      <label><input type="checkbox" id="auto-refresh" checked /> Auto-refresh</label>
+      <button type="button" id="logs-refresh-btn">Refresh</button>
+      <button type="button" class="danger" id="logs-clear-btn">Clear</button>
+    </div>
+  </div>
+  <p class="notes">
+    Last 200 requests.
+    <span id="persistence-note"></span>
+    <span id="content-capture-note"></span>
+  </p>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>time</th><th>model</th><th>provider</th><th>stream</th><th>status</th><th>duration</th><th>tokens</th><th>error</th><th></th></tr>
+      </thead>
+      <tbody id="log-rows"></tbody>
+    </table>
+  </div>
+  <p id="logs-empty" style="display:none">No requests logged yet.</p>
+</div>
+
+<footer>cli-wrapper</footer>
 
 <dialog id="log-dialog">
   <h3 id="log-dialog-title">Request detail</h3>
@@ -104,30 +281,16 @@
   <pre id="log-dialog-input"></pre>
   <h4>Output</h4>
   <pre id="log-dialog-output"></pre>
-  <div style="text-align:right;margin-top:0.75rem;">
+  <div style="text-align:right;margin-top:0.9rem;">
     <button type="button" id="log-dialog-close">Close</button>
   </div>
 </dialog>
 
 <script>
-const token = new URLSearchParams(location.search).get("token") || "";
-function withToken(url) {
-  const u = new URL(url, location.href);
-  if (token) u.searchParams.set("token", token);
-  return u.toString();
-}
-const statusEl = document.getElementById("status");
-const rowsEl = document.getElementById("rows");
-const form = document.getElementById("form");
-const submitBtn = document.getElementById("submit-btn");
-const cancelBtn = document.getElementById("cancel-btn");
-const formTitle = document.getElementById("form-title");
-let editingId = null;
-
-function setStatus(msg) { statusEl.textContent = msg || ""; }
-
+// No auth token needed anywhere on this page — /settings and /api/settings/*
+// are intentionally open (see AGENTS.md's "Settings has no auth, by design").
 async function api(path, opts) {
-  const res = await fetch(withToken(path), {
+  const res = await fetch(path, {
     ...opts,
     headers: { "Content-Type": "application/json", ...(opts && opts.headers) },
   });
@@ -140,27 +303,97 @@ async function api(path, opts) {
   return res.json();
 }
 
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+
+// --- Server settings ---
+
+const settingsForm = document.getElementById("settings-form");
+const settingsStatusEl = document.getElementById("settings-status");
+const regenKeyBtn = document.getElementById("regen-key-btn");
+
+function setSettingsStatus(msg, ok) {
+  settingsStatusEl.textContent = msg || "";
+  settingsStatusEl.classList.toggle("status-ok", !!ok);
+}
+
+function fillSettingsForm(s) {
+  settingsForm.apiKey.value = s.apiKey || "";
+  settingsForm.port.value = s.port;
+  settingsForm.cliTimeoutMs.value = s.cliTimeoutMs;
+  settingsForm.cliWorkdir.value = s.cliWorkdir;
+  settingsForm.logFilePath.value = s.logFilePath || "";
+  settingsForm.logCaptureContent.checked = !!s.logCaptureContent;
+}
+
+async function refreshSettings() {
+  try {
+    const s = await api("/api/settings/config");
+    fillSettingsForm(s);
+  } catch (err) {
+    setSettingsStatus(err.message);
+  }
+}
+
+regenKeyBtn.addEventListener("click", () => {
+  const bytes = new Uint8Array(24);
+  crypto.getRandomValues(bytes);
+  settingsForm.apiKey.value = Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+});
+
+settingsForm.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const fd = new FormData(settingsForm);
+  const payload = {
+    apiKey: fd.get("apiKey").trim(),
+    port: Number(fd.get("port")),
+    cliTimeoutMs: Number(fd.get("cliTimeoutMs")),
+    cliWorkdir: fd.get("cliWorkdir").trim(),
+    logFilePath: fd.get("logFilePath").trim() || null,
+    logCaptureContent: fd.get("logCaptureContent") === "on",
+  };
+  try {
+    const updated = await api("/api/settings/config", { method: "PUT", body: JSON.stringify(payload) });
+    fillSettingsForm(updated);
+    setSettingsStatus("Saved.", true);
+    refreshMeta();
+  } catch (err) {
+    setSettingsStatus(err.message);
+  }
+});
+
+refreshSettings();
+
+// --- Model routing ---
+
+const statusEl = document.getElementById("status");
+const rowsEl = document.getElementById("rows");
+const form = document.getElementById("form");
+const submitBtn = document.getElementById("submit-btn");
+const cancelBtn = document.getElementById("cancel-btn");
+const formTitle = document.getElementById("form-title");
+let editingId = null;
+
+function setStatus(msg) { statusEl.textContent = msg || ""; }
+
 function renderRows(models) {
   rowsEl.innerHTML = "";
   for (const m of models) {
     const tr = document.createElement("tr");
     tr.innerHTML = `
-      <td>${escapeHtml(m.id)}</td>
+      <td class="mono">${escapeHtml(m.id)}</td>
       <td>${escapeHtml(m.provider)}</td>
-      <td>${escapeHtml(m.cliModel)}</td>
-      <td>${escapeHtml((m.extraFlags || []).join(", "))}</td>
+      <td class="mono">${escapeHtml(m.cliModel)}</td>
+      <td class="mono">${escapeHtml((m.extraFlags || []).join(", "))}</td>
       <td>${escapeHtml(m.description || "")}</td>
       <td class="row-actions">
         <button data-edit="${encodeURIComponent(m.id)}">Edit</button>
-        <button data-delete="${encodeURIComponent(m.id)}">Delete</button>
+        <button class="danger" data-delete="${encodeURIComponent(m.id)}">Delete</button>
       </td>
     `;
     rowsEl.appendChild(tr);
   }
-}
-
-function escapeHtml(s) {
-  return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 }
 
 let cachedModels = [];
@@ -274,12 +507,12 @@ function renderLogs(entries) {
     const tr = document.createElement("tr");
     tr.innerHTML = `
       <td>${escapeHtml(fmtTime(e.timestamp))}</td>
-      <td>${escapeHtml(e.model)}</td>
+      <td class="mono">${escapeHtml(e.model)}</td>
       <td>${escapeHtml(e.provider)}</td>
       <td>${e.stream ? "yes" : "no"}</td>
       <td>${badgeFor(e.status)}</td>
       <td>${escapeHtml(fmtDuration(e.durationMs))}</td>
-      <td>${escapeHtml(fmtTokens(e.usage))}</td>
+      <td class="mono">${escapeHtml(fmtTokens(e.usage))}</td>
       <td class="error-cell" title="${escapeHtml(e.error || "")}">${escapeHtml(e.error || "")}</td>
       <td><button data-view="${encodeURIComponent(e.id)}">View</button></td>
     `;
@@ -358,16 +591,19 @@ autoRefreshEl.addEventListener("change", () => {
 
 const contentCaptureNoteEl = document.getElementById("content-capture-note");
 const persistenceNoteEl = document.getElementById("persistence-note");
-api("/api/settings/meta")
-  .then((meta) => {
-    contentCaptureNoteEl.textContent = meta.logCaptureContent
-      ? " Full prompt/response content is captured (LOG_CAPTURE_CONTENT=true)."
-      : " Prompt/response content capture is disabled (LOG_CAPTURE_CONTENT=false) — only metadata is shown below.";
-    persistenceNoteEl.textContent = meta.logPersistence && meta.logPersistence.enabled
-      ? ` Persisted to ${meta.logPersistence.path} — survives a restart.`
-      : " In-memory only — cleared on server restart (set LOG_FILE_PATH to persist).";
-  })
-  .catch(() => {}); // non-critical; leave the notes blank on failure
+function refreshMeta() {
+  return api("/api/settings/meta")
+    .then((meta) => {
+      contentCaptureNoteEl.textContent = meta.logCaptureContent
+        ? " Full prompt/response content is captured."
+        : " Prompt/response content capture is disabled — only metadata is shown below.";
+      persistenceNoteEl.textContent = meta.logPersistence && meta.logPersistence.enabled
+        ? ` Persisted to ${meta.logPersistence.path} — survives a restart.`
+        : " In-memory only — cleared on server restart.";
+    })
+    .catch(() => {}); // non-critical; leave the notes blank on failure
+}
+refreshMeta();
 
 refreshLogs();
 if (autoRefreshEl.checked) startLogPolling();

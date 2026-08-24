@@ -1,35 +1,38 @@
 import express from "express";
-import path from "node:path";
-import type { Env } from "./env.js";
 import { bearerAuth } from "./auth.js";
+import { getSettings } from "./config.js";
 import { chatRouter } from "./routes/chat.js";
 import { modelsRouter } from "./routes/models.js";
 import { settingsRouter } from "./routes/settings.js";
 
-export function buildApp(env: Env, publicDir: string) {
+export function buildApp(publicDir: string) {
   const app = express();
   app.use(express.json({ limit: "10mb" }));
-
-  const strictAuth = bearerAuth(env.apiKey);
-  const settingsAuth = bearerAuth(env.apiKey, { allowQueryToken: true });
 
   app.get("/healthz", (_req, res) => res.json({ status: "ok" }));
 
   // Auth middleware is scoped by URL path prefix here, at the app level, so
-  // Express's own routing decides which requests reach which auth check
-  // before any router-internal logic runs. `app.use(path, mw)` matches
-  // path and everything under it (e.g. "/v1" matches "/v1/models").
-  // Mounting auth via `app.use(mw, router)` instead would NOT achieve this:
-  // that form runs `mw` for every request that reaches this mount point
-  // ("/" for all three routers below), regardless of whether the router
-  // actually has a matching route — the first such middleware in the chain
-  // would hijack every request, authenticated or not.
-  app.use("/v1", strictAuth);
-  app.use(["/settings", "/api/settings"], settingsAuth);
+  // Express's own routing decides which requests reach the auth check
+  // before any router-internal logic runs (see AGENTS.md's gotcha #2 —
+  // `app.use(mw, router)` would NOT achieve this: that form runs `mw` for
+  // every request reaching this mount point regardless of whether the
+  // router has a matching route).
+  //
+  // Only /v1/* is guarded. /settings and /api/settings/* are intentionally
+  // open — no token, by design (this is the "allow open settings without
+  // authentication" request) — so the settings page itself can be reached
+  // without knowing the key stored inside it. That's a real trade-off: it
+  // means the model routing, activity log (which can hold full prompt/
+  // response text, see logs.ts), and the /v1 API key itself are all
+  // readable/editable by anyone who can reach this HTTP server. Treat
+  // network access to this server as equivalent to full admin access — put
+  // it behind localhost-only binding, a private network, or a reverse
+  // proxy with its own auth if it's ever reachable beyond a trusted host.
+  app.use("/v1", bearerAuth(() => getSettings().apiKey));
 
-  app.use(chatRouter(env));
+  app.use(chatRouter());
   app.use(modelsRouter());
-  app.use(settingsRouter(publicDir, env.logCaptureContent));
+  app.use(settingsRouter(publicDir));
 
   return app;
 }

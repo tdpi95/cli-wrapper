@@ -25,7 +25,7 @@ export interface LogEntry {
 // cleared on restart, never touches disk. With it on, the same 200-entry
 // buffer is written to a JSON file after every change and reloaded at
 // startup, so activity (including full request/response content if
-// LOG_CAPTURE_CONTENT is on — see env.ts/README) survives a restart.
+// settings.logCaptureContent is on — see config.ts/README) survives a restart.
 // Don't enable persistence casually: it means sensitive conversation
 // content can end up sitting in a plaintext file on disk, not just memory.
 const MAX_ENTRIES = 200;
@@ -88,4 +88,18 @@ export function isLogPersistenceEnabled(): boolean {
 
 export function getLogPersistPath(): string | undefined {
   return persistPath;
+}
+
+/**
+ * Changes the persist path at runtime (called from the settings API when
+ * `logFilePath` is edited on /settings, unlike initLogPersistence which is
+ * startup-only). Deliberately does NOT load the new file's existing
+ * contents into the in-memory buffer — that's a startup concern only, and
+ * merging here would risk duplicating entries. It does write the current
+ * in-memory buffer out immediately so the new path takes effect right away
+ * (or, if disabling, simply stops writing from the next entry on).
+ */
+export function setLogPersistPath(filePath: string | undefined): void {
+  persistPath = filePath;
+  persist();
 }

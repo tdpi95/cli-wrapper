@@ -11,21 +11,25 @@ function safeEqual(a: string, b: string): boolean {
 }
 
 /**
- * Bearer-token auth. Accepts the token via the standard Authorization header
- * (used by the chat API and OpenAI-style clients), and additionally via a
- * `?token=` query param — needed because a browser navigating directly to
- * /settings can't attach a custom header. The query-param fallback is scoped
- * to this middleware only being mounted on /settings and /api/settings/*.
+ * Bearer-token auth for `/v1/*`. Takes a getter rather than a fixed string
+ * because the key now lives in config.json and can change at runtime via
+ * the (unauthenticated) settings page — each request re-reads the current
+ * value, same "always read fresh" convention as config.ts. An empty key
+ * means auth is deliberately disabled: this is only ever true if someone
+ * blanked it out on /settings (config.ts always generates a non-empty key
+ * on first run), so treat it as an explicit, visible opt-out, not a silent
+ * default.
  */
-export function bearerAuth(apiKey: string, opts: { allowQueryToken?: boolean } = {}) {
+export function bearerAuth(getApiKey: () => string) {
   return (req: Request, res: Response, next: NextFunction) => {
-    const header = req.headers.authorization;
-    let presented: string | undefined;
-    if (header && header.startsWith("Bearer ")) {
-      presented = header.slice("Bearer ".length);
-    } else if (opts.allowQueryToken && typeof req.query.token === "string") {
-      presented = req.query.token;
+    const apiKey = getApiKey();
+    if (!apiKey) {
+      next();
+      return;
     }
+
+    const header = req.headers.authorization;
+    const presented = header && header.startsWith("Bearer ") ? header.slice("Bearer ".length) : undefined;
 
     if (!presented || !safeEqual(presented, apiKey)) {
       const { status, body } = toErrorResponse();

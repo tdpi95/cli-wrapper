@@ -1,6 +1,6 @@
+import path from "node:path";
 import { Router } from "express";
-import type { Env } from "../env.js";
-import { getMapping } from "../config.js";
+import { getMapping, getSettings } from "../config.js";
 import { getProvider } from "../providers/index.js";
 import { flattenMessages, type ChatMessage } from "../transcript.js";
 import { newCompletionId, toChatCompletion, toSSELine, DONE_LINE } from "../openai/transform.js";
@@ -13,16 +13,21 @@ import type { Usage } from "../providers/types.js";
 // prefix — not here — since a router-internal `.use(auth)` with no path
 // would match every request reaching this router's mount point, not just
 // the routes this file defines.
-export function chatRouter(env: Env): Router {
+export function chatRouter(): Router {
   const router = Router();
 
   router.post("/v1/chat/completions", async (req, res) => {
     const body = req.body as Partial<ChatCompletionRequest>;
     const startedAt = Date.now();
+    // Read fresh per request — same "config.json is the source of truth,
+    // re-read every call, no caching" convention as config.ts, now covering
+    // cliTimeoutMs/cliWorkdir/logCaptureContent too since they're editable
+    // from /settings at runtime.
+    const settings = getSettings();
     const modelForLog = typeof body.model === "string" && body.model.trim() !== "" ? body.model : "(missing)";
     let providerForLog: "claude" | "codex" | "unknown" = "unknown";
     const streamForLog = body.stream === true;
-    const captureContent = env.logCaptureContent;
+    const captureContent = settings.logCaptureContent;
     let inputForLog: string | undefined;
 
     try {
@@ -60,8 +65,8 @@ export function chatRouter(env: Env): Router {
         extraFlags: mapping.extraFlags,
         systemPrompt,
         transcript,
-        timeoutMs: env.cliTimeoutMs,
-        workdir: env.cliWorkdir,
+        timeoutMs: settings.cliTimeoutMs,
+        workdir: path.resolve(process.cwd(), settings.cliWorkdir),
         signal: controller.signal,
       };
 

@@ -1,22 +1,43 @@
 import path from "node:path";
 import { Router } from "express";
-import { addMapping, deleteMapping, loadConfig, updateMapping } from "../config.js";
+import { addMapping, deleteMapping, getSettings, loadConfig, updateMapping, updateSettings } from "../config.js";
 import { toApiError } from "../errors.js";
-import { clearLogEntries, getLogEntries, getLogPersistPath, isLogPersistenceEnabled } from "../logs.js";
+import { clearLogEntries, getLogEntries, getLogPersistPath, isLogPersistenceEnabled, setLogPersistPath } from "../logs.js";
 
-// See the comment in chat.ts: auth is applied by path prefix in app.ts, not here.
-export function settingsRouter(publicDir: string, logCaptureContent: boolean): Router {
+// No auth on any route in this file, by design — see the note in app.ts.
+export function settingsRouter(publicDir: string): Router {
   const router = Router();
 
   router.get("/settings", (_req, res) => {
     res.sendFile(path.join(publicDir, "settings.html"));
   });
 
+  // Kept for backwards compatibility with the settings page's previous
+  // shape; /api/settings/config below is the full read/write surface.
   router.get("/api/settings/meta", (_req, res) => {
+    const settings = getSettings();
     res.json({
-      logCaptureContent,
+      logCaptureContent: settings.logCaptureContent,
       logPersistence: { enabled: isLogPersistenceEnabled(), path: getLogPersistPath() },
     });
+  });
+
+  router.get("/api/settings/config", (_req, res) => {
+    res.json(getSettings());
+  });
+
+  router.put("/api/settings/config", (req, res) => {
+    try {
+      const before = getSettings();
+      const updated = updateSettings(req.body);
+      if (updated.logFilePath !== before.logFilePath) {
+        setLogPersistPath(updated.logFilePath ? path.resolve(process.cwd(), updated.logFilePath) : undefined);
+      }
+      res.json(updated);
+    } catch (err) {
+      const { status, body } = toApiError(err);
+      res.status(status).json(body);
+    }
   });
 
   router.get("/api/settings/models", (_req, res) => {

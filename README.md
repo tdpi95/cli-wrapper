@@ -1,8 +1,9 @@
 # cli-wrapper
 
 An OpenAI-compatible HTTP API backed by the `claude` (Claude Code) and `codex` CLIs, run as
-chat-only subprocesses (no file/shell tool access). Includes a small settings page for
-editing which client-facing model names route to which CLI + underlying model.
+chat-only subprocesses (no file/shell tool access). Includes a settings page — open to
+anyone who can reach the server, no login — for editing model routing and all server
+configuration live, without touching env vars or restarting.
 
 ## Prerequisites
 
@@ -14,14 +15,20 @@ editing which client-facing model names route to which CLI + underlying model.
 
 ```sh
 npm install
-cp .env.example .env   # edit WRAPPER_API_KEY to a long random string
 npm run dev
 ```
 
-On first run, `config.json` is seeded from `config.example.json` if it doesn't already exist.
+That's it — no `.env` edits required. On first run, `config.json` is seeded from
+`config.example.json` and a random API key is generated for you; the server prints it once
+to the console, e.g.:
 
-`WRAPPER_API_KEY` is required — the server refuses to start without it, since it's meant to
-be reachable over HTTP.
+```
+  Generated a new API key for /v1/*: 3f9c2a1e7b...
+  View or change it any time at /settings (no login required to open that page).
+```
+
+You can also view/change it (or any other setting) any time at `/settings` — see
+"Configuration" below.
 
 > **Check your model ids before relying on the seed config.** `cliModel` values are passed
 > straight through to `--model`/`-m`, and which ones work depends on your login (e.g. a
@@ -29,18 +36,43 @@ be reachable over HTTP.
 > with a ChatGPT account" — check `~/.codex/config.toml` or `codex features list` for what's
 > actually available to you, and `claude --model` aliases like `sonnet`/`opus` for Claude).
 
+## Configuration
+
+Everything that used to be an env var now lives in `config.json` and is editable live from
+`http://localhost:8868/settings` — no restart needed (except for `port`):
+
+- **API key** — the bearer token required on `/v1/*`. Leave it blank on the settings page
+  to disable auth on `/v1/*` entirely (an explicit, visible opt-out — the server never
+  starts with a blank key on its own; see the callout below about `/settings` itself).
+- **Port**, **CLI timeout**, **CLI working directory**.
+- **Activity log**: whether full prompt/response text is captured, and an optional file
+  path to persist the last 200 entries to disk (see "Recent activity" below).
+
+Only two things remain env vars, because they're needed before `config.json` can even be
+located: `CONFIG_PATH` (default `./config.json`) and an optional `PORT` override for
+deployments that inject it themselves (e.g. containers/process managers) — see
+`.env.example`. Editing `config.json` directly also works; it's read fresh on every request,
+same as the model routing table.
+
+> **`/settings` has no authentication, by design.** Anyone who can reach this server over
+> the network can open it, read/change the model routing, read/change every setting above
+> — including the API key that guards `/v1/*` — and (if content capture is on) read full
+> past prompts/responses in the activity log. This is an internal/personal-use tool; bind it
+> to localhost or put it behind a network boundary/reverse-proxy with its own auth if it's
+> ever reachable beyond a trusted host.
+
 ## Usage
 
-All of `/v1/chat/completions`, `/v1/models`, `/settings`, and `/api/settings/*` require
-`Authorization: Bearer <WRAPPER_API_KEY>`. `/settings` and its API additionally accept the
-token as `?token=...` in the URL, since a browser navigating directly can't set headers.
+`/v1/chat/completions` and `/v1/models` require `Authorization: Bearer <apiKey>` (the key
+shown on `/settings`), unless you've blanked it out there. `/settings` and `/api/settings/*`
+never require auth.
 
 ```sh
-curl http://localhost:8787/v1/models \
-  -H "Authorization: Bearer $WRAPPER_API_KEY"
+curl http://localhost:8868/v1/models \
+  -H "Authorization: Bearer $API_KEY"
 
-curl http://localhost:8787/v1/chat/completions \
-  -H "Authorization: Bearer $WRAPPER_API_KEY" \
+curl http://localhost:8868/v1/chat/completions \
+  -H "Authorization: Bearer $API_KEY" \
   -H "Content-Type: application/json" \
   -d '{"model":"claude-sonnet-5","messages":[{"role":"user","content":"Say hi"}]}'
 ```
@@ -48,24 +80,23 @@ curl http://localhost:8787/v1/chat/completions \
 Streaming works the same way with `"stream": true` — responses are Server-Sent Events
 ending in `data: [DONE]`.
 
-Open `http://localhost:8787/settings?token=$WRAPPER_API_KEY` in a browser to add, edit, or
-remove model mappings. Changes take effect immediately on the next API request — no restart
-needed. The same page has a **Recent activity** panel (auto-refreshing every 4s) showing the
-last 200 chat-completion requests — model, provider, streaming, status, duration, token
-usage, and error message where relevant. Each row has a **View** button showing the full
-prompt sent to the CLI and the full response text. Backed by `GET`/`DELETE
-/api/settings/logs`; it's in-memory only by default and resets on server restart — set
-`LOG_FILE_PATH` to persist it to a JSON file instead (still capped at the last 200 entries,
-loaded back on the next start).
+Open `http://localhost:8868/settings` in a browser to edit server configuration and model
+mappings. Changes take effect immediately on the next API request — no restart needed
+(except `port`). The same page has a **Recent activity** panel (auto-refreshing every 4s)
+showing the last 200 chat-completion requests — model, provider, streaming, status,
+duration, token usage, and error message where relevant. Each row has a **View** button
+showing the full prompt sent to the CLI and the full response text. Backed by
+`GET`/`DELETE /api/settings/logs`; it's in-memory only by default and resets on server
+restart — set a log file path on the settings page to persist it to disk instead (still
+capped at the last 200 entries, loaded back on the next start).
 
 > **This means full conversation content can sit in server memory, and optionally on
-> disk**, visible to anyone who has (or guesses/leaks) `WRAPPER_API_KEY` — or, if
-> `LOG_FILE_PATH` is set, anyone with filesystem access to that path. Don't run this
-> somewhere sensitive conversations could be exposed by it, and treat the token (and the
-> log file, if enabled) accordingly. Set `LOG_CAPTURE_CONTENT=false` to keep the activity
-> log to metadata only (model, provider, status, duration, token counts) with no
-> prompt/response text stored anywhere, on disk or in memory. The settings page shows which
-> modes are active.
+> disk**, visible to anyone who can reach `/settings` (which, again, has no auth of its
+> own) — or, if a log file path is set, anyone with filesystem access to that path. Don't
+> run this somewhere sensitive conversations could be exposed by it. Turn off "store full
+> prompt/response text" on the settings page to keep the activity log to metadata only
+> (model, provider, status, duration, token counts) with no prompt/response text stored
+> anywhere, on disk or in memory. The settings page shows which modes are active.
 
 ## Shipping to another machine
 
@@ -83,17 +114,18 @@ however you move files there) and install it:
 
 ```sh
 npm install -g ./cli-wrapper-0.1.0.tgz
-cp $(npm root -g)/cli-wrapper/.env.example ./.env   # edit WRAPPER_API_KEY, etc.
 cli-wrapper
 ```
 
 That installs a `cli-wrapper` command (from this package's `bin` entry) onto `PATH`. It
-reads `.env`/env vars and creates `config.json`/`.cli-wrapper-workspace/`/log files
-relative to wherever you run it from — same as running from a source checkout, just
-without needing `git clone` + a full dev toolchain on the target machine. `npm install -g`
-also resolves and installs this package's own dependencies (`express`, `dotenv`) from the
-npm registry, so the target machine needs npm registry access (or an internal
-mirror/private registry) at install time — the tarball itself doesn't vendor them.
+creates `config.json`/`.cli-wrapper-workspace/`/log files relative to wherever you run it
+from — same as running from a source checkout, just without needing `git clone` + a full
+dev toolchain on the target machine. It seeds `config.json` and generates a fresh API key
+on first run, same as local `npm run dev` — see "Configuration" above; no `.env` needed
+unless you want to override `CONFIG_PATH` or `PORT`. `npm install -g` also resolves and
+installs this package's own dependencies (`express`, `dotenv`) from the npm registry, so
+the target machine needs npm registry access (or an internal mirror/private registry) at
+install time — the tarball itself doesn't vendor them.
 
 No Node.js on the target machine at all, or want a single self-contained executable
 instead of an npm-installed command? That needs a different approach (bundling with
@@ -114,20 +146,18 @@ ask if you want that built out; see `AGENTS.md`'s open optimizations for the tra
 - **Codex streaming**: the Codex CLI doesn't emit token-level deltas, so a "streaming"
   codex response arrives as a single content chunk followed by the completion signal,
   rather than incremental text.
-- A hard timeout (`CLI_TIMEOUT_MS`, default 120000ms) kills any subprocess that runs too
-  long, and subprocesses are also killed if the HTTP client disconnects early.
+- A hard timeout (the CLI timeout on the settings page, default 120000ms) kills any
+  subprocess that runs too long, and subprocesses are also killed if the HTTP client
+  disconnects early.
 
 ## Environment variables
 
+Only two — everything else moved to `config.json`/`/settings`, see "Configuration" above.
+
 | Var | Default | Meaning |
 |---|---|---|
-| `WRAPPER_API_KEY` | *(required)* | Shared bearer token for all endpoints |
-| `PORT` | `8787` | HTTP port |
-| `CLI_TIMEOUT_MS` | `120000` | Hard per-request subprocess timeout |
-| `CONFIG_PATH` | `./config.json` | Path to the model-routing config |
-| `CLI_WORKDIR` | `./.cli-wrapper-workspace` | Working directory passed to the CLIs |
-| `LOG_CAPTURE_CONTENT` | `true` | Whether the activity log stores full prompt/response text (`false`/`0`/`no`/`off` to disable, metadata-only) |
-| `LOG_FILE_PATH` | *(unset — in-memory only)* | If set, persists the last 200 activity-log entries to this JSON file and reloads them on startup |
+| `CONFIG_PATH` | `./config.json` | Path to the config file (settings + model routing) |
+| `PORT` | *(unset — uses `config.json`'s `settings.port`)* | Overrides the configured port for this run |
 
 ## More docs
 
