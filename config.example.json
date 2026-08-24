@@ -19,7 +19,9 @@
       "id": "claude-opus-5",
       "provider": "claude",
       "cliModel": "opus",
-      "description": "Claude Opus via the Claude Code CLI"
+      "reasoningEffort": "high",
+      "allowReasoningEffortOverride": true,
+      "description": "Claude Opus via the Claude Code CLI, extended thinking on by default (override with the request's reasoning_effort field)"
     },
     {
       "id": "gpt-5.5",

@@ -36,10 +36,17 @@ src/
   types/config.ts    ModelMapping / WrapperSettings / WrapperConfig types
   providers/
     types.ts         CliProvider interface shared by both backends
-    claude.ts        spawns `claude -p`, parses its JSON / stream-json output
-    codex.ts         spawns `codex exec`, parses its --json JSONL output
+    claude.ts        thin adapter — delegates straight to process/claudePool.ts
+    codex.ts         spawns `codex exec` fresh per request, parses its --json JSONL output
     index.ts         getProvider(name) factory
-  process/run.ts     spawnManaged(): the ONE place timeout/kill/abort-on-disconnect lives
+  process/
+    run.ts           spawnManaged(): one-shot subprocess timeout/kill/abort-on-disconnect
+                     (still what codex.ts uses); killWithGrace() is shared with claudePool.ts
+    claudePool.ts    warm claude process pool — keeps `claude -p --input-format
+                     stream-json` processes alive across requests, sends "/clear" before
+                     every turn, retires each after a random 20-30 uses — see its top-of-
+                     file comment for the full design and the "Warm claude process pool"
+                     section below
   routes/
     chat.ts          POST /v1/chat/completions (streaming + non-streaming)
     models.ts        GET /v1/models
@@ -79,9 +86,11 @@ given the Node.js-is-already-required assumption above.
   string array to `spawn(cmd, args, {shell:false})`. This is what makes arbitrary user
   prompt content (quotes, backticks, `$()`, newlines) safe to pass straight through — don't
   reintroduce a shell anywhere in this path.
-- **All timeout/kill/abort logic lives in `process/run.ts`, once.** If you add a third
-  provider, route it through `spawnManaged()` rather than calling `child_process.spawn`
-  directly — that's the sole backstop against a hung subprocess.
+- **All "forcibly kill a child process" logic is `process/run.ts`'s `killWithGrace()`,
+  once.** `spawnManaged()` (one-shot processes — codex.ts, and anything else you add) and
+  `process/claudePool.ts` (warm claude workers) both call it rather than each rolling their
+  own SIGTERM/SIGKILL timer. If you add a third provider that's one-shot like codex, route
+  it through `spawnManaged()` directly rather than calling `child_process.spawn` yourself.
 - **`config.ts` reads `config.json` fresh on every call.** No cache, no `fs.watch`. This is
   intentional — the file is tiny and read once per HTTP request, and "always read fresh"
   is simpler to reason about than cache invalidation. Don't add caching without a reason.
@@ -154,19 +163,209 @@ These are documented in detail as comments at their fix sites, but the summary:
    `item.completed`/`type:"error"` JSONL event, as fatal by itself for codex — only "no
    `agent_message` ever arrived" is failure (see `providers/codex.ts`).
 
+6. **Both CLIs leak this very repo's own context into chat completions if `cliWorkdir`
+   sits inside it (as the default `./.cli-wrapper-workspace` does) — and claude leaks it
+   even from a directory outside the repo, whenever a request carries no system prompt.**
+   Verified live: a plain chat request with an empty system prompt got answers back citing
+   this repo's actual AGENTS.md content and a real `git log` commit hash — not a
+   hallucination, and not fixed by `--tools ""` or `--setting-sources ""`, which only gate
+   tool *execution* and settings.json, not this.
+   - **claude**: an omitted/empty `--system-prompt` doesn't mean "no system prompt" — it
+     means "fall back to claude's own default 'Claude Code' system prompt," which bakes in
+     cwd, git status, and (via CLAUDE.md auto-discovery walking up to the repo root) this
+     repo's own `CLAUDE.md`/`AGENTS.md`. Fix: `claudePool.ts` now passes `--system-prompt
+     ""` unconditionally at spawn time (it's spawn-time-only, like `--model`) — this alone
+     fully neutralizes the default persona/context, confirmed by direct A/B testing. The
+     caller's actual system prompt, if any, still reaches the model via
+     `buildTurnText()`'s turn-text folding, unaffected by this.
+   - **codex**: separately, `codex exec` auto-discovers and injects the nearest `AGENTS.md`
+     up the directory tree (a different mechanism from claude's CLAUDE.md — codex does this
+     regardless of system-prompt content, since it has no `--system-prompt` flag at all).
+     Fix: `providers/codex.ts` now passes `-c project_doc_max_bytes=0`, confirmed live to
+     suppress it.
+   - Either leak only reproduces when `cliWorkdir` (or a parent of it) contains a
+     `CLAUDE.md`/`AGENTS.md`/`.git` — an operator running this wrapper from inside some
+     *other* project's checkout would leak *that* project's context instead. The fixes
+     above are general, not specific to this repo.
+
+7. **`initConfig()` used to regenerate the API key on every single startup whenever
+   `settings.apiKey` was `""` — even when that `""` was already sitting on disk as a
+   deliberate prior choice, not a fresh/migrating config.** The bug: the "generate a key if
+   blank" check ran unconditionally after loading `raw.settings`, with no way to distinguish
+   "this config predates the settings-page feature entirely" (where generating one is
+   correct — see first-run/migration below) from "an operator already blanked the field on
+   `/settings` and saved" (where it must be left alone). Verified live: wrote a config.json
+   with an explicit `"apiKey": ""`, started the server twice, and got a fresh "Generated a
+   new API key" message + a rewritten file both times — meaning restarting after
+   deliberately disabling `/v1/*` auth silently turned it back on, directly contradicting the
+   documented invariant in "Settings has no auth, by design" above. Fixed: generation now
+   only happens in the `!raw.settings` branch (a real version-1-style migration, where
+   there's no prior explicit choice to respect) or on genuine first-run (`config.json` didn't
+   exist yet) — an existing config's `settings.apiKey`, blank or not, is now always respected
+   verbatim. Verified live again post-fix: same explicit-`""` config across two startups, no
+   regeneration, no rewrite.
+
 ## Is a new CLI process spawned per request?
 
-Yes, always — see the answer already given in conversation. No pooling, no session resume,
-no persistent worker. Every `POST /v1/chat/completions` call flattens the full message
-history into one prompt (`transcript.ts`) and spawns a fresh `claude -p` or `codex exec`
-with `--no-session-persistence`/`--ephemeral`. This trades away cross-turn prompt caching
-and pays a fresh CLI-boot cost every call, in exchange for zero session-state bookkeeping
-and no risk of leaking/colliding sessions across concurrent requests. See "Open
-optimizations" below for what changing this would look like.
+**codex: yes, always.** Every `POST /v1/chat/completions` routed to a codex model flattens
+the full message history into one prompt (`transcript.ts`) and spawns a fresh `codex exec
+--ephemeral`. Zero session-state bookkeeping, no risk of leaking/colliding sessions across
+concurrent requests, but pays a full CLI-boot cost (plus the ~15–20s websocket-fallback
+delay from gotcha #5) every single call.
+
+**claude: no, not anymore — see "Warm claude process pool" below.** `providers/claude.ts`
+now delegates to `process/claudePool.ts`, which keeps `claude -p --input-format
+stream-json` processes alive across requests and reuses them. The full message history is
+still flattened and resent on every call exactly as before (no cross-turn prompt caching,
+no client-visible behavior change) — only the *process* is reused, not any conversation
+state, which is wiped via `/clear` before every single turn.
+
+## Warm claude process pool (`process/claudePool.ts`)
+
+`claude -p` supports `--input-format stream-json`: instead of exiting after one reply, the
+process stays alive reading more turns from stdin. Verified live: a cold `claude -p` call
+costs ~1-3s of pure process boot/auth-check/tool-init overhead on top of the actual model
+API time; a warm process's 2nd+ turn costs ~30-50ms of overhead. Sending `"/clear"` as a
+plain turn resets the conversation in ~30ms — confirmed (by asking the model to recall
+something from before the clear) that it actually wipes context, not just cosmetic output.
+
+How it's used here — a pool of these warm processes, keyed by `(cliModel, extraFlags)`,
+with **`/clear` sent before every single turn** so every HTTP request gets a genuinely blank
+slate regardless of what the process handled before it (same statelessness guarantee as the
+old one-process-per-request design, just without paying to boot a process each time). Each
+worker is retired — not reused — after a random 20-30 uses (chosen once, at spawn time), so
+no single process lives forever accumulating state/memory across hundreds of unrelated
+conversations; retirement closes stdin and lets the CLI exit on its own EOF (SIGTERM only as
+a fallback if it doesn't exit within 3s), since nothing's actually wrong with the process at
+that point. Verified live: watched a worker serve exactly its assigned use-count then get
+replaced by a fresh PID, with no old process left behind.
+
+Design constraints worth knowing before touching this file:
+- **`--model` and `extraFlags` are spawn-time-only** — can't change them on a live process.
+  Pools are keyed by the `(cliModel, extraFlags)` combination, not by model-mapping id, so
+  two mappings that happen to share both transparently share one pool.
+- **`--system-prompt` is ALSO spawn-time-only.** Rather than one pool per distinct system
+  prompt (unbounded cardinality — every client could send a different one), the system
+  prompt is folded into the turn text itself (`"System: ...\n\nUser: ..."`), the same
+  approach `providers/codex.ts` already uses since codex has no system-prompt flag at all.
+  Trade-off worth knowing: a system prompt delivered as part of user-turn text may carry
+  less weight with the model than claude's dedicated `--system-prompt` channel. If that ever
+  matters in practice, the fix is keying pools by a system-prompt hash too (spawning each
+  with a real `--system-prompt`), at the cost of more idle processes when clients send many
+  distinct system prompts.
+- **A worker that times out, gets aborted (client disconnected mid-turn), or exits
+  unexpectedly is never returned to the pool — only ever killed.** Reusing a process we
+  can't prove finished cleanly risks a later request reading output that belongs to an
+  abandoned turn. Only a clean `result` event (whether `is_error` or not — a model-level
+  error doesn't mean the process itself is broken) is considered safe to reuse.
+  `Worker.broken` is the flag that routes a finished turn to `hardKill()` instead of
+  `releaseOrRetire()`.
+- **Changing `cliWorkdir` on the settings page only affects newly spawned workers** —
+  already-idle warm workers keep the `--cwd` they were spawned with until they retire
+  naturally or the server restarts.
+- **Capped at `MAX_TOTAL_WORKERS` (20) live processes, across all keys combined — not per
+  key.** An idle warm process measures ~280-320MB RSS, so an uncapped burst (or one spread
+  across many distinct `cliModel`/`extraFlags` combinations) could exhaust host memory,
+  unlike the pre-pool design where each one-shot process exited the moment its request
+  finished. A request that arrives with no idle worker to reuse and no room under the cap
+  queues (`claudePool.ts`'s `waiters`) rather than failing outright or bypassing the cap
+  with an untracked spawn — bounded by the same `opts.timeoutMs`/`opts.signal` every
+  in-flight turn already respects, so a queued request can't hang past the request's normal
+  timeout. This also (partially) covers "Per-provider concurrency limits/queuing" below for
+  claude specifically; codex still has no such cap.
+- **Idle workers are killed after `IDLE_TIMEOUT_MS` (30 min) of not being reused.** The
+  per-use retirement above bounds a busy worker's total lifetime, but does nothing for a
+  worker that goes idle and just sits there — without this, a traffic burst that fills the
+  pool and then goes quiet would leave all of it (up to `MAX_TOTAL_WORKERS` processes)
+  resident indefinitely, holding memory for no ongoing benefit.
+- **Graceful shutdown matters more now than it used to.** A one-shot process only ever
+  lived for the duration of one request, so an abruptly killed server orphaning it was a
+  narrow window. Warm workers deliberately outlive individual requests, so `server.ts`
+  installs `SIGTERM`/`SIGINT` handlers that call `shutdownClaudePool()` before exiting —
+  verified live (sent a real SIGTERM to a running server with an active warm worker,
+  confirmed the worker was gone, not orphaned). A `SIGKILL`'d server (or a crash) still
+  can't run this hook — same caveat any Node process has.
+
+## Reasoning effort control and content (`ModelMapping.reasoningEffort`/`allowReasoningEffortOverride`)
+
+A model mapping can set a default reasoning effort and optionally let a per-request
+`reasoning_effort` field (OpenAI's own chat.completions field name for reasoning models)
+override it — verified live end-to-end (config round-trip, both providers' spawn args, and
+that requests actually landed on the right warm claude process by effort level). When effort
+is requested, the actual reasoning/thinking content (when the CLI produces any) is also
+captured and returned as `message.reasoning_content` (non-streaming) or `delta
+.reasoning_content` chunks (streaming) — the de facto OpenAI-compatible field name several
+tools already read (DeepSeek, LiteLLM, Open WebUI), not an official OpenAI field since
+chat.completions has no standard one. `RunResult.reasoningText`/`StreamChunk`'s `"reasoning"`
+kind carry it internally (`providers/types.ts`); it's `undefined`, never `""`, when nothing
+was captured, so "no reasoning happened" and "reasoning happened but content was empty" stay
+distinguishable up to the OpenAI response shape, which simply omits the key in the former
+case (see `openai/transform.ts`).
+
+- **Shared six-value enum** (`REASONING_EFFORT_VALUES`/`ReasoningEffort` in
+  `types/config.ts`): `minimal`/`low`/`medium`/`high`/`xhigh`/`max`. Neither CLI accepts all
+  six — claude's `--effort` has no `minimal`, codex's `-c model_reasoning_effort=` has
+  neither `xhigh` nor `max` — but same as `cliModel` (gotcha #4), this is validated only for
+  typos, not provider/account correctness. Picking a value the mapping's actual provider
+  doesn't support surfaces as a CLI-level error at request time, not a config-save-time
+  rejection.
+- **codex** (`providers/codex.ts`): trivial — it's already a one-shot spawn per request, so
+  `-c model_reasoning_effort=<value>` is appended fresh to that request's argv when resolved,
+  bundled with `-c model_reasoning_summary=detailed -c show_raw_agent_reasoning=true` (all
+  three together — verified live that any one or two alone produce nothing) so its
+  `item.completed` events of type `"reasoning"` actually appear. Each is a short summary (not
+  raw chain-of-thought — codex/GPT-5 don't expose that), and a turn can emit several before
+  its `agent_message`; `consume()` yields each as its own `{type: "reasoning"}` event, joined
+  with `\n\n` for the non-streaming `reasoningText`, or forwarded as individual `"reasoning"`
+  StreamChunks (each one whole, no token-level deltas — same as `agent_message`) when
+  streaming. These overrides are only added when `reasoningEffort` is set, not unconditionally
+  — a plain request that never asks for reasoning shouldn't pay for the extra
+  summary-generation latency by default.
+- **claude** (`process/claudePool.ts`): `--effort` is spawn-time-only like `--model`, so it's
+  folded into the pool key — `PoolKeyParts` and `poolKeyFor()` now include `reasoningEffort`.
+  Unlike system prompt (deliberately *not* keyed — unbounded cardinality), this is a safe key
+  to add: only 6 legal values, a small bounded multiplier on pool size, still capped overall
+  by `MAX_TOTAL_WORKERS`. Verified live: two mappings resolving to the same effective
+  `(cliModel, extraFlags, reasoningEffort)` tuple shared one warm process; a third mapping
+  resolving to a different tuple got its own. A request with no effort resolved gets no
+  `--effort` flag at all — identical to pre-this-feature behavior.
+- **claude's reasoning content** (`process/claudePool.ts`'s `waitForResult`/
+  `TurnDeltaCallbacks`): real `content_block_start`(`type:"thinking"`)/`content_block_delta`
+  (`delta.type:"thinking_delta"`) stream-json events exist and are wired up (only possible
+  when `--effort` was passed, i.e. `reasoningEffort` was set). **Caveat verified live**: even
+  at `--effort max` on opus, the actual `thinking` text came back as an empty string on every
+  delta while `usage.output_tokens_details.thinking_tokens` was still non-zero and billed —
+  some accounts/plans redact the content but not the cost. `onReasoningDelta` skips empty
+  deltas rather than forwarding a stream of no-op `reasoning_content` chunks (verified live:
+  without this, a single turn emitted three empty-string `reasoning_content` SSE chunks before
+  any real content); whether real thinking text ever comes through depends on the account/
+  plan, not on this wrapper's code.
+- **Request-time resolution** (`routes/chat.ts`): the mapping's `reasoningEffort` is the
+  default; a request's `reasoning_effort` field only overrides it if the mapping has
+  `allowReasoningEffortOverride: true`. If that's false, an incoming `reasoning_effort` is
+  **silently ignored** — same convention as `temperature`/`max_tokens`/etc. (unsupported
+  fields are ignored, not errored) — rather than a 400, since sending it isn't necessarily a
+  mistake (some client libraries set it by default). If override *is* allowed but the value
+  isn't one of the six, that's a real 400 `invalid_request` — the mapping opted into this
+  field being meaningful, so a garbage value is a genuine client error, not a passthrough.
+- **Settings page**: the model routing table/form now has a "Default reasoning effort"
+  select and an "Allow per-request override" checkbox alongside the existing fields. The
+  select's options are rebuilt per-provider client-side (`REASONING_EFFORT_BY_PROVIDER`/
+  `populateReasoningEffortOptions()` in `settings.html`) — claude's 5, codex's 4 — purely as
+  a UI nicety pointed at the right subset; the server-side validation stays the shared
+  6-value enum regardless (see above), so this never blocks a value the API itself would
+  accept. Two behaviors that are easy to get backwards if touching this: switching the
+  provider dropdown *drops* a previously-selected value that isn't valid for the new
+  provider (no `allowExtra`, defaults to the select's current value as "previous"); loading
+  an existing mapping for edit instead calls it with `allowExtra: true` so a legacy value
+  that's off-list for its own provider (possible since the server never rejected it) is kept
+  as an extra option rather than silently disappearing — and reverting to a blank default —
+  the moment you open that mapping and save again without touching the field.
 
 ## Open optimizations for future development
 
-Roughly ordered by likely value; none of these are started.
+Roughly ordered by likely value; the warm process pool below is the only one of these
+shipped so far (and only for claude, not codex — see its own bullet).
 
 ### Performance / cost
 - **Session reuse for multi-turn conversations.** Keep a server-side map of some
@@ -176,15 +375,25 @@ Roughly ordered by likely value; none of these are started.
   re-flattening and re-sending the whole history every time. Would recover cross-turn
   prompt caching and cut the growing-transcript cost, at the price of real session
   lifecycle management (expiry, cleanup, concurrent-use-of-one-session handling).
-- **Warm process pool** to avoid paying CLI boot cost (auth check, MCP/tool init even
-  though tools are disabled, and codex's ~15–20s websocket-fallback delay in some network
-  environments) on every single call. Much harder than session reuse to do safely given
-  `-p`/`exec`'s one-shot-per-invocation design — would likely need the CLIs' own
-  server/daemon modes (e.g. `codex mcp-server`/`app-server`) rather than repeated `exec`.
-- **Per-provider concurrency limits / queuing.** There's currently no cap on how many
-  subprocesses can run at once — a burst of requests spawns a matching burst of `claude`/
-  `codex` processes. Fine for a personal/internal wrapper, not fine if this is ever exposed
-  more broadly.
+- **Warm process pool — done for claude, not for codex.** See "Warm claude process pool"
+  above. `codex exec` has no equivalent stdin-keep-alive mode to build on (confirmed live —
+  no `--input-format` flag exists on `exec`), so it still pays full CLI-boot cost, plus its
+  ~15–20s websocket-fallback delay, on every single call. The only programmatic route to
+  something similar for codex is its `[EXPERIMENTAL]` `app-server`/`exec-server` daemon — a
+  bespoke, undocumented JSON-RPC protocol (150+ methods; there's a `generate-ts`/
+  `generate-json-schema` subcommand because no client library exists yet), with no
+  confirmed "reset this thread in place" method (only `thread/start`, which creates a new
+  thread, not an in-place clear). A much bigger, riskier lift than the claude change — worth
+  a separately-scoped investigation if warm codex processes ever become a priority, not an
+  extension of claudePool.ts's approach.
+- **Per-provider concurrency limits / queuing — done for claude, not for codex.**
+  `claudePool.ts` caps total warm workers at `MAX_TOTAL_WORKERS` and queues requests beyond
+  that (see "Warm claude process pool" above). `codex exec` is still a fresh one-shot
+  `spawnManaged` process per request with no cap at all — a burst of codex-routed requests
+  spawns a matching burst of `codex` processes. Fine for a personal/internal wrapper, not
+  fine if this is ever exposed more broadly. Bounding it would mean giving `spawnManaged`
+  (or a wrapper around it) the same kind of global-cap-plus-queue `claudePool.ts` already
+  has for claude.
 
 ### Correctness / robustness
 - **Concurrent `config.json` writes aren't mutex'd.** The atomic tmp-file+rename in
@@ -220,17 +429,32 @@ Roughly ordered by likely value; none of these are started.
 - **`stream_options.include_usage` support** — currently not implemented; usage is only
   returned in non-streaming responses, matching baseline OpenAI behavior but not the
   opt-in extension some clients use.
+- **Tool use / function calling is an intentional non-goal, not a gap** — verified live, not
+  just assumed. Gave `claude -p` `--tools "Bash"` in its default non-interactive permission
+  mode and asked it to run a shell command: it auto-executed the tool itself with no prompt
+  (`num_turns: 2` internally, a synthetic `tool_result` folded back in, then final text) —
+  there's no point where either CLI's `-p`/`exec` invocation stops and hands an unexecuted
+  tool call back to an external caller to run and return a result for, which is the entire
+  contract OpenAI/Anthropic's real function-calling API depends on. This isn't a missing
+  flag; it's how the CLIs' one-shot agent loop is structured. Enabling `--tools` at all would
+  also reopen real shell/file execution, conflicting with this wrapper's core "chat-only, no
+  agentic tools" guarantee. Not planned; see the conversation this was verified in if
+  revisiting — a prompt-based simulation (describe the client's tools in-prompt, parse a
+  structured reply back into `tool_calls`) is the only halfway-plausible route found, and
+  it's unreliable, not real tool-use semantics.
 - **Optional agentic/tool mode** was explicitly scoped out of v1 (see `PLAN.md`'s Context
   section) in favor of pure chat completions. If ever revisited: needs a real sandboxing
   decision (per-request temp workdir at minimum, likely a container or VM boundary given
   HTTP exposure), a way to surface tool-call events in OpenAI's `tool_calls` response
   shape, and a hard rethink of the "never hangs" guarantee once approval prompts become a
   real possibility again.
-- **Graceful shutdown.** `server.ts` has no `SIGTERM`/`SIGINT` handler — in-flight
-  subprocesses aren't given a chance to finish or be cleanly killed on process exit today;
-  they'd just become orphaned or die with their parent depending on OS behavior. Worth
-  adding an explicit shutdown hook that tracks in-flight `spawnManaged` processes and
-  terminates them.
+- **Graceful shutdown — partially done.** `server.ts` now has `SIGTERM`/`SIGINT` handlers,
+  but they only call `shutdownClaudePool()` (kills warm claude workers — see above). A
+  one-shot `spawnManaged` process (codex, currently) that's mid-request when the server
+  exits still isn't tracked or terminated — it'll become orphaned or die with its parent
+  depending on OS behavior, same as before this change. Closing that gap would mean
+  `spawnManaged` registering each process in a shared in-flight set that the shutdown
+  handler also drains.
 - **`logs.ts`'s event log is intentionally minimal** (ring buffer capped at 200,
   chat-completions only, no filtering/search in the UI). It stores full request/response
   content (`input`/`output` on `LogEntry`, viewable per-row in the settings UI via a "View"

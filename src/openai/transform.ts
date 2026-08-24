@@ -15,7 +15,11 @@ export function toChatCompletion(result: RunResult, model: string, id: string, c
     choices: [
       {
         index: 0,
-        message: { role: "assistant", content: result.text },
+        message: {
+          role: "assistant",
+          content: result.text,
+          ...(result.reasoningText ? { reasoning_content: result.reasoningText } : {}),
+        },
         finish_reason: result.stopReason,
       },
     ],
@@ -53,6 +57,8 @@ export function toSSELine(streamChunk: StreamChunk, id: string, created: number,
   switch (streamChunk.kind) {
     case "role":
       return sseLine(chunk(id, created, model, { role: "assistant" }, null));
+    case "reasoning":
+      return sseLine(chunk(id, created, model, { reasoning_content: streamChunk.text }, null));
     case "delta":
       return sseLine(chunk(id, created, model, { content: streamChunk.text }, null));
     case "done":

@@ -134,15 +134,43 @@ ask if you want that built out; see `AGENTS.md`'s open optimizations for the tra
 
 ## Notes / limitations
 
-- **Stateless**: each request spawns a fresh CLI subprocess; there is no session
-  continuity between requests (matches the OpenAI API's own stateless chat-completions
-  semantics — clients resend full history each call).
+- **Stateless from the outside, warm on the inside (claude only)**: every request still
+  gets a completely blank conversation and the full message history is still resent and
+  reprocessed every call — no client-visible behavior change and no cross-turn caching.
+  But under the hood, `claude`-routed requests reuse a small pool of already-running
+  `claude` processes instead of spawning a new one each time (each is sent a `/clear`
+  before every request, and retired after 20-30 requests so none runs forever). This cuts
+  the ~1-3s CLI boot/auth-check overhead most requests would otherwise pay. `codex`-routed
+  requests still spawn a fresh subprocess every time — see AGENTS.md if you're curious why
+  the same trick doesn't apply there.
+- **Claude warm-pool cap**: at most 20 `claude` processes run at once, shared across all
+  models routed to it (an idle one holds ~300MB RSS). A burst past that cap queues rather
+  than failing outright, bounded by the same CLI timeout as any other request — so under
+  heavy concurrent load a request may wait for a slot before it starts, rather than erroring
+  immediately. `codex`-routed requests have no such cap.
 - **Chat-only**: both CLIs run with tools/file/shell access disabled. `claude` uses
   `--tools ""`; `codex` uses `--sandbox read-only`. Neither can modify your filesystem or
   run commands via this wrapper.
 - **Unsupported OpenAI fields**: `temperature`, `max_tokens`, `top_p`, etc. are accepted in
   the request body but ignored — the underlying CLIs don't expose equivalent controls
   through this wrapper.
+- **Reasoning effort and content**: a model mapping can set a default reasoning effort
+  (`minimal` / `low` / `medium` / `high` / `xhigh` / `max`) on the settings page, and
+  optionally allow a request's own `reasoning_effort` field (same field name real OpenAI
+  reasoning models use) to override it for that call. Off by default — if a mapping hasn't
+  enabled the override, a `reasoning_effort` sent to it is silently ignored, same as any
+  other unsupported field above. When effort is requested, the response also includes a
+  `reasoning_content` field (`message.reasoning_content` non-streaming, `delta
+  .reasoning_content` chunks streaming — the same field name DeepSeek/LiteLLM/Open WebUI
+  already use) whenever the underlying CLI produced any visible reasoning text. Note for
+  claude specifically: some accounts/plans redact the actual thinking text while still
+  billing the tokens for it — in that case `reasoning_content` just won't appear, even
+  though effort/cost was genuinely spent.
+- **Tool use / function calling isn't supported** — not just unimplemented, but not
+  possible with these CLIs as invoked here: both run their tool loop to completion
+  internally and never hand an unexecuted call back out for a client to run and return a
+  result for, which real OpenAI/Anthropic function-calling requires. See AGENTS.md for how
+  this was verified.
 - **Codex streaming**: the Codex CLI doesn't emit token-level deltas, so a "streaming"
   codex response arrives as a single content chunk followed by the completion signal,
   rather than incremental text.

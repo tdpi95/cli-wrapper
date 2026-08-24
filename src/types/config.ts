@@ -1,5 +1,17 @@
 export type ProviderName = "claude" | "codex";
 
+/**
+ * Shared across both providers even though neither CLI accepts all six —
+ * claude's `--effort` takes low/medium/high/xhigh/max (no "minimal"), codex's
+ * `-c model_reasoning_effort=` takes minimal/low/medium/high (no
+ * xhigh/max). Same laissez-faire approach as `cliModel` (see AGENTS.md
+ * gotcha #4): this only catches typos, not provider/account-invalid values —
+ * picking a value the mapping's own provider doesn't support surfaces as a
+ * CLI-level error at request time, not a config-save-time rejection.
+ */
+export const REASONING_EFFORT_VALUES = ["minimal", "low", "medium", "high", "xhigh", "max"] as const;
+export type ReasoningEffort = (typeof REASONING_EFFORT_VALUES)[number];
+
 export interface ModelMapping {
   /** Client-facing model name, e.g. "claude-sonnet-5". Used as the OpenAI `model` field. */
   id: string;
@@ -9,6 +21,19 @@ export interface ModelMapping {
   /** Extra flags appended verbatim to the spawn argv. */
   extraFlags?: string[];
   description?: string;
+  /**
+   * Default reasoning effort for this mapping. Omitted = today's behavior,
+   * unchanged: no --effort / -c model_reasoning_effort= passed at all.
+   */
+  reasoningEffort?: ReasoningEffort;
+  /**
+   * If true, a request's `reasoning_effort` field (OpenAI's own chat.completions
+   * field name for reasoning models) overrides `reasoningEffort` above for that
+   * one request. Default false — matches the existing "unsupported OpenAI
+   * fields are silently ignored" convention when a client sends this but the
+   * mapping hasn't opted in, rather than erroring.
+   */
+  allowReasoningEffortOverride?: boolean;
 }
 
 /**

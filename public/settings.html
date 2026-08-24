@@ -122,9 +122,16 @@
   button:hover { border-color: var(--accent); color: var(--accent); }
   button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
   button.primary:hover { background: var(--accent-hover); border-color: var(--accent-hover); color: #fff; }
-  button.danger:hover { border-color: var(--danger); color: var(--danger); }
+  /* .edit/.danger carry their color at rest, not just on hover — an edit or
+     delete action should read as such at a glance in the table, not only
+     once you're already hovering it. Hover then commits to a solid fill,
+     same "outline -> filled" pattern button.primary already uses. */
+  button.edit { border-color: color-mix(in srgb, var(--accent) 45%, var(--border)); color: var(--accent); }
+  button.edit:hover { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.danger { border-color: color-mix(in srgb, var(--danger) 45%, var(--border)); color: var(--danger); }
+  button.danger:hover { background: var(--danger); border-color: var(--danger); color: #fff; }
   button:disabled { opacity: 0.5; cursor: default; }
-  button:disabled:hover { border-color: var(--border); color: var(--text); }
+  button:disabled:hover { border-color: var(--border); color: var(--text); background: var(--card); }
   .actions { display: flex; gap: 0.5rem; flex-wrap: wrap; }
   .row-actions { display: flex; gap: 0.4rem; }
   .row-actions button { padding: 0.3rem 0.6rem; font-size: 0.78rem; }
@@ -153,9 +160,9 @@
   #log-dialog-meta { font-size: 0.8rem; color: var(--text-dim); margin-bottom: 0.5rem; }
   #log-dialog-error-block { display: none; }
   #log-dialog-error-block pre { background: var(--danger-bg); color: var(--danger); }
-  .apikey-row { display: flex; gap: 0.5rem; }
-  .apikey-row input { flex: 1; }
-  .apikey-row button { flex-shrink: 0; }
+  .copy-row { display: flex; gap: 0.5rem; }
+  .copy-row input { flex: 1; }
+  .copy-row button { flex-shrink: 0; }
   footer { text-align: center; font-size: 0.75rem; color: var(--text-faint); margin-top: 2.5rem; }
 </style>
 </head>
@@ -173,9 +180,16 @@
   </div>
   <p id="settings-status"></p>
   <form class="grid" id="settings-form">
+    <label class="full"><span>API base URL <span class="hint">(use as the OpenAI client's base URL / api_base)</span></span>
+      <div class="copy-row">
+        <input type="text" id="api-host-input" class="mono" readonly />
+        <button type="button" id="copy-host-btn">Copy</button>
+      </div>
+    </label>
     <label class="full"><span>API key (used for <code>Authorization: Bearer …</code> on /v1/*; blank disables auth on /v1 too)</span>
-      <div class="apikey-row">
+      <div class="copy-row">
         <input type="text" name="apiKey" class="mono" placeholder="(none — /v1 is open)" />
+        <button type="button" id="copy-key-btn">Copy</button>
         <button type="button" id="regen-key-btn">Regenerate</button>
       </div>
     </label>
@@ -210,7 +224,7 @@
   <div class="table-wrap">
     <table>
       <thead>
-        <tr><th>id</th><th>provider</th><th>cliModel</th><th>extraFlags</th><th>description</th><th></th></tr>
+        <tr><th>id</th><th>provider</th><th>cliModel</th><th>extraFlags</th><th>reasoning effort</th><th>override?</th><th>description</th><th></th></tr>
       </thead>
       <tbody id="rows"></tbody>
     </table>
@@ -232,6 +246,12 @@
     </label>
     <label class="full">extraFlags (comma-separated)
       <input type="text" name="extraFlags" />
+    </label>
+    <label><span>Default reasoning effort <span class="hint">(blank = provider default, no extra thinking; options depend on provider)</span></span>
+      <select name="reasoningEffort"></select>
+    </label>
+    <label class="checkbox-row full"><input type="checkbox" name="allowReasoningEffortOverride" />
+      Allow per-request override <span class="hint">(client's <code>reasoning_effort</code> field)</span>
     </label>
     <label class="full">description
       <input type="text" name="description" />
@@ -312,11 +332,37 @@ function escapeHtml(s) {
 const settingsForm = document.getElementById("settings-form");
 const settingsStatusEl = document.getElementById("settings-status");
 const regenKeyBtn = document.getElementById("regen-key-btn");
+const apiHostInput = document.getElementById("api-host-input");
+const copyHostBtn = document.getElementById("copy-host-btn");
+const copyKeyBtn = document.getElementById("copy-key-btn");
+
+// Derived from the page's own origin rather than the (possibly unsaved, or
+// saved-but-not-yet-restarted) port field — this is the address the browser
+// actually used to reach this server right now, so it's always correct.
+apiHostInput.value = `${location.origin}/v1`;
 
 function setSettingsStatus(msg, ok) {
   settingsStatusEl.textContent = msg || "";
   settingsStatusEl.classList.toggle("status-ok", !!ok);
 }
+
+async function copyToClipboard(text, btn) {
+  try {
+    await navigator.clipboard.writeText(text);
+  } catch {
+    return; // clipboard access denied/unavailable (e.g. non-secure context) — fail quietly
+  }
+  const original = btn.textContent;
+  btn.textContent = "Copied!";
+  btn.disabled = true;
+  setTimeout(() => {
+    btn.textContent = original;
+    btn.disabled = false;
+  }, 1200);
+}
+
+copyHostBtn.addEventListener("click", () => copyToClipboard(apiHostInput.value, copyHostBtn));
+copyKeyBtn.addEventListener("click", () => copyToClipboard(settingsForm.apiKey.value, copyKeyBtn));
 
 function fillSettingsForm(s) {
   settingsForm.apiKey.value = s.apiKey || "";
@@ -375,6 +421,41 @@ const cancelBtn = document.getElementById("cancel-btn");
 const formTitle = document.getElementById("form-title");
 let editingId = null;
 
+// Neither CLI accepts all 6 REASONING_EFFORT_VALUES from types/config.ts —
+// claude's --effort has no "minimal", codex's -c model_reasoning_effort= has
+// neither "xhigh" nor "max" (see AGENTS.md's "Reasoning effort control and
+// content"). The server still accepts any of the 6 for either provider
+// (typo protection only, not provider-correctness — same as cliModel), so
+// this is just the dropdown showing sensible options per provider, not a
+// hard client-side restriction.
+const REASONING_EFFORT_BY_PROVIDER = {
+  claude: ["low", "medium", "high", "xhigh", "max"],
+  codex: ["minimal", "low", "medium", "high"],
+};
+
+/**
+ * Rebuilds the reasoningEffort <select>'s options for the currently-chosen
+ * provider. `keepValue` defaults to the select's current value (used when
+ * the user actively switches providers — an old value that isn't valid for
+ * the new provider is correctly dropped, not carried over). Pass
+ * `allowExtra: true` only when populating the form from an already-saved
+ * mapping, so a value that's off-list for its own provider (the server
+ * accepts any of the 6 for either provider — see this constant's comment
+ * above) is kept as an extra option instead of silently vanishing the
+ * moment you open that mapping for edit and save again untouched.
+ */
+function populateReasoningEffortOptions(keepValue, allowExtra) {
+  const select = form.reasoningEffort;
+  const previous = keepValue !== undefined ? keepValue : select.value;
+  const values = REASONING_EFFORT_BY_PROVIDER[form.provider.value] || [];
+  const allValues = allowExtra && previous && !values.includes(previous) ? [...values, previous] : values;
+  select.innerHTML = `<option value="">(none)</option>` + allValues.map((v) => `<option value="${v}">${v}</option>`).join("");
+  select.value = previous && allValues.includes(previous) ? previous : "";
+}
+
+form.provider.addEventListener("change", () => populateReasoningEffortOptions());
+populateReasoningEffortOptions();
+
 function setStatus(msg) { statusEl.textContent = msg || ""; }
 
 function renderRows(models) {
@@ -386,10 +467,12 @@ function renderRows(models) {
       <td>${escapeHtml(m.provider)}</td>
       <td class="mono">${escapeHtml(m.cliModel)}</td>
       <td class="mono">${escapeHtml((m.extraFlags || []).join(", "))}</td>
+      <td class="mono">${escapeHtml(m.reasoningEffort || "")}</td>
+      <td>${m.allowReasoningEffortOverride ? "✓" : ""}</td>
       <td>${escapeHtml(m.description || "")}</td>
       <td class="row-actions">
-        <button data-edit="${encodeURIComponent(m.id)}">Edit</button>
-        <button class="danger" data-delete="${encodeURIComponent(m.id)}">Delete</button>
+        <button class="edit" data-edit="${encodeURIComponent(m.id)}">✏️ Edit</button>
+        <button class="danger" data-delete="${encodeURIComponent(m.id)}">🗑️ Delete</button>
       </td>
     `;
     rowsEl.appendChild(tr);
@@ -410,6 +493,7 @@ async function refresh() {
 
 function resetForm() {
   form.reset();
+  populateReasoningEffortOptions();
   editingId = null;
   submitBtn.textContent = "Add";
   formTitle.textContent = "Add model mapping";
@@ -424,6 +508,8 @@ form.addEventListener("submit", async (e) => {
     provider: fd.get("provider"),
     cliModel: fd.get("cliModel").trim(),
     extraFlags: fd.get("extraFlags").trim() ? fd.get("extraFlags").split(",").map((s) => s.trim()).filter(Boolean) : undefined,
+    reasoningEffort: fd.get("reasoningEffort") || undefined,
+    allowReasoningEffortOverride: fd.get("allowReasoningEffortOverride") === "on",
     description: fd.get("description").trim() || undefined,
   };
   try {
@@ -453,6 +539,8 @@ rowsEl.addEventListener("click", async (e) => {
     form.provider.value = m.provider;
     form.cliModel.value = m.cliModel;
     form.extraFlags.value = (m.extraFlags || []).join(", ");
+    populateReasoningEffortOptions(m.reasoningEffort || "", true);
+    form.allowReasoningEffortOverride.checked = !!m.allowReasoningEffortOverride;
     form.description.value = m.description || "";
     submitBtn.textContent = "Save";
     formTitle.textContent = `Edit "${id}"`;

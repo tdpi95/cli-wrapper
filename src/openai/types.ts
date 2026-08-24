@@ -4,6 +4,11 @@ export interface ChatCompletionRequest {
   model: string;
   messages: ChatMessage[];
   stream?: boolean;
+  // OpenAI's own chat.completions field name for reasoning models. Only
+  // honored if the resolved model mapping has `allowReasoningEffortOverride:
+  // true` (see routes/chat.ts) — otherwise ignored like any other
+  // unsupported field below, not an error.
+  reasoning_effort?: string;
   // Other OpenAI fields (temperature, top_p, max_tokens, etc.) are accepted
   // by Express's JSON body parser but intentionally ignored — unsupported
   // passthroughs, not silently misapplied.
@@ -18,7 +23,12 @@ export interface ChatCompletionResponse {
   choices: [
     {
       index: 0;
-      message: { role: "assistant"; content: string };
+      // reasoning_content: the de facto OpenAI-compatible convention for a
+      // model's reasoning/thinking trace (DeepSeek, LiteLLM, Open WebUI,
+      // etc. all read this field name) — not an official OpenAI field,
+      // since chat.completions has no standard one. Present only when the
+      // provider actually captured some (see RunResult.reasoningText).
+      message: { role: "assistant"; content: string; reasoning_content?: string };
       finish_reason: "stop" | "length" | "error";
     },
   ];
@@ -37,7 +47,7 @@ export interface ChatCompletionChunk {
   choices: [
     {
       index: 0;
-      delta: { role?: "assistant"; content?: string };
+      delta: { role?: "assistant"; content?: string; reasoning_content?: string };
       finish_reason: "stop" | "length" | "error" | null;
     },
   ];

@@ -16,6 +16,21 @@ const GRACE_PERIOD_MS = 3000;
 const STDERR_TAIL_LIMIT = 4096;
 
 /**
+ * SIGTERM, then SIGKILL after a grace period if it hasn't exited by then.
+ * The one place "forcibly kill a child process" is implemented — both
+ * spawnManaged (one-shot processes below) and process/claudePool.ts's warm
+ * workers route through this rather than each rolling their own SIGTERM/
+ * SIGKILL timer. Safe to call on an already-exited process (kill() on a dead
+ * pid is a no-op, not a throw).
+ */
+export function killWithGrace(proc: { kill(signal: NodeJS.Signals): boolean; killed: boolean }, graceMs = GRACE_PERIOD_MS): void {
+  proc.kill("SIGTERM");
+  setTimeout(() => {
+    if (!proc.killed) proc.kill("SIGKILL");
+  }, graceMs);
+}
+
+/**
  * Spawns a CLI, enforces a hard timeout (SIGTERM then SIGKILL), and kills the
  * process if the given AbortSignal fires (wired to the HTTP request's
  * 'close' event so abandoned subprocesses don't accumulate). This is the
@@ -40,27 +55,18 @@ export function spawnManaged(
   });
 
   let killTimer: NodeJS.Timeout | undefined;
-  let graceTimer: NodeJS.Timeout | undefined;
 
   const clearTimers = () => {
     if (killTimer) clearTimeout(killTimer);
-    if (graceTimer) clearTimeout(graceTimer);
   };
 
-  const killWithGrace = () => {
-    proc.kill("SIGTERM");
-    graceTimer = setTimeout(() => {
-      if (!proc.killed) proc.kill("SIGKILL");
-    }, GRACE_PERIOD_MS);
-  };
+  const onAbort = () => killWithGrace(proc);
+  opts.signal?.addEventListener("abort", onAbort, { once: true });
 
   killTimer = setTimeout(() => {
     timedOut = true;
-    killWithGrace();
+    killWithGrace(proc);
   }, opts.timeoutMs);
-
-  const onAbort = () => killWithGrace();
-  opts.signal?.addEventListener("abort", onAbort, { once: true });
 
   const whenExited = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve) => {
     proc.on("close", (code, signal) => {

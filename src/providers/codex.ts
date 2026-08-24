@@ -24,6 +24,22 @@ function args(opts: RunOptions): string[] {
     "read-only",
     "--skip-git-repo-check",
     "--ephemeral",
+    // Without this, codex auto-discovers and injects the nearest AGENTS.md
+    // up the directory tree into its context (verified live: leaked this
+    // very repo's own AGENTS.md content into responses when cliWorkdir sat
+    // inside it) — not the chat-only "clean" backend this wrapper is meant
+    // to provide. 0 disables reading it entirely.
+    "-c",
+    "project_doc_max_bytes=0",
+    // model_reasoning_summary/show_raw_agent_reasoning gate whether codex
+    // emits any "reasoning" item at all — verified live that any one or two
+    // of these three overrides alone produces nothing, all three together
+    // are required. Bundled with reasoningEffort (rather than always-on) so
+    // a plain request that never asks for reasoning doesn't pay for the
+    // extra reasoning-summary generation/latency by default.
+    ...(opts.reasoningEffort
+      ? ["-c", `model_reasoning_effort=${opts.reasoningEffort}`, "-c", "model_reasoning_summary=detailed", "-c", "show_raw_agent_reasoning=true"]
+      : []),
     "-m",
     opts.cliModel,
     "-C",
@@ -48,6 +64,7 @@ function usageFrom(raw: { input_tokens?: number; output_tokens?: number } | unde
  */
 async function* consume(opts: RunOptions): AsyncIterable<
   | { type: "message"; text: string }
+  | { type: "reasoning"; text: string }
   | { type: "usage"; usage: Usage }
   | { type: "warning"; message: string }
 > {
@@ -64,6 +81,11 @@ async function* consume(opts: RunOptions): AsyncIterable<
 
     if (evt.type === "item.completed" && evt.item?.type === "agent_message") {
       yield { type: "message", text: evt.item.text ?? "" };
+    } else if (evt.type === "item.completed" && evt.item?.type === "reasoning") {
+      // A short summary, not raw chain-of-thought (codex/GPT-5 don't expose
+      // that) — one item per reasoning "chunk" the model produces during the
+      // turn, so a turn can yield several of these before its agent_message.
+      yield { type: "reasoning", text: evt.item.text ?? "" };
     } else if (evt.type === "item.completed" && evt.item?.type === "error") {
       // Transient warnings (e.g. websocket->HTTPS transport fallback) can
       // appear even on a fully successful run — never treat as fatal alone.
@@ -89,6 +111,7 @@ async function* consume(opts: RunOptions): AsyncIterable<
 export const codexProvider: CliProvider = {
   async runNonStreaming(opts: RunOptions): Promise<RunResult> {
     let text: string | undefined;
+    const reasoningParts: string[] = [];
     let usage: Usage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
     let lastWarning: string | undefined;
     let exitError: unknown;
@@ -96,6 +119,7 @@ export const codexProvider: CliProvider = {
     try {
       for await (const evt of consume(opts)) {
         if (evt.type === "message") text = evt.text;
+        else if (evt.type === "reasoning") reasoningParts.push(evt.text);
         else if (evt.type === "usage") usage = evt.usage;
         else if (evt.type === "warning") lastWarning = evt.message;
       }
@@ -104,7 +128,7 @@ export const codexProvider: CliProvider = {
     }
 
     if (text !== undefined) {
-      return { text, usage, stopReason: "stop" };
+      return { text, reasoningText: reasoningParts.length ? reasoningParts.join("\n\n") : undefined, usage, stopReason: "stop" };
     }
     if (exitError) throw exitError;
     throw new CliExecutionError(lastWarning ?? "codex produced no output");
@@ -126,6 +150,14 @@ export const codexProvider: CliProvider = {
           sawMessage = true;
           // No token-level deltas from codex — emit the whole message as one chunk.
           yield { kind: "delta", text: evt.text };
+        } else if (evt.type === "reasoning") {
+          if (!evt.text) continue; // defensive: skip an empty summary chunk, same as claudePool.ts
+          if (!roleSent) {
+            roleSent = true;
+            yield { kind: "role" };
+          }
+          // Same "whole chunk, no token deltas" situation as agent_message.
+          yield { kind: "reasoning", text: evt.text };
         } else if (evt.type === "usage") {
           usage = evt.usage;
         } else if (evt.type === "warning") {
