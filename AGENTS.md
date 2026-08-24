@@ -36,10 +36,17 @@ src/
   types/config.ts    ModelMapping / WrapperSettings / WrapperConfig types
   providers/
     types.ts         CliProvider interface shared by both backends
-    claude.ts        spawns `claude -p`, parses its JSON / stream-json output
-    codex.ts         spawns `codex exec`, parses its --json JSONL output
+    claude.ts        thin adapter — delegates straight to process/claudePool.ts
+    codex.ts         spawns `codex exec` fresh per request, parses its --json JSONL output
     index.ts         getProvider(name) factory
-  process/run.ts     spawnManaged(): the ONE place timeout/kill/abort-on-disconnect lives
+  process/
+    run.ts           spawnManaged(): one-shot subprocess timeout/kill/abort-on-disconnect
+                     (still what codex.ts uses); killWithGrace() is shared with claudePool.ts
+    claudePool.ts    warm claude process pool — keeps `claude -p --input-format
+                     stream-json` processes alive across requests, sends "/clear" before
+                     every turn, retires each after a random 20-30 uses — see its top-of-
+                     file comment for the full design and the "Warm claude process pool"
+                     section below
   routes/
     chat.ts          POST /v1/chat/completions (streaming + non-streaming)
     models.ts        GET /v1/models
@@ -79,9 +86,11 @@ given the Node.js-is-already-required assumption above.
   string array to `spawn(cmd, args, {shell:false})`. This is what makes arbitrary user
   prompt content (quotes, backticks, `$()`, newlines) safe to pass straight through — don't
   reintroduce a shell anywhere in this path.
-- **All timeout/kill/abort logic lives in `process/run.ts`, once.** If you add a third
-  provider, route it through `spawnManaged()` rather than calling `child_process.spawn`
-  directly — that's the sole backstop against a hung subprocess.
+- **All "forcibly kill a child process" logic is `process/run.ts`'s `killWithGrace()`,
+  once.** `spawnManaged()` (one-shot processes — codex.ts, and anything else you add) and
+  `process/claudePool.ts` (warm claude workers) both call it rather than each rolling their
+  own SIGTERM/SIGKILL timer. If you add a third provider that's one-shot like codex, route
+  it through `spawnManaged()` directly rather than calling `child_process.spawn` yourself.
 - **`config.ts` reads `config.json` fresh on every call.** No cache, no `fs.watch`. This is
   intentional — the file is tiny and read once per HTTP request, and "always read fresh"
   is simpler to reason about than cache invalidation. Don't add caching without a reason.
@@ -156,17 +165,89 @@ These are documented in detail as comments at their fix sites, but the summary:
 
 ## Is a new CLI process spawned per request?
 
-Yes, always — see the answer already given in conversation. No pooling, no session resume,
-no persistent worker. Every `POST /v1/chat/completions` call flattens the full message
-history into one prompt (`transcript.ts`) and spawns a fresh `claude -p` or `codex exec`
-with `--no-session-persistence`/`--ephemeral`. This trades away cross-turn prompt caching
-and pays a fresh CLI-boot cost every call, in exchange for zero session-state bookkeeping
-and no risk of leaking/colliding sessions across concurrent requests. See "Open
-optimizations" below for what changing this would look like.
+**codex: yes, always.** Every `POST /v1/chat/completions` routed to a codex model flattens
+the full message history into one prompt (`transcript.ts`) and spawns a fresh `codex exec
+--ephemeral`. Zero session-state bookkeeping, no risk of leaking/colliding sessions across
+concurrent requests, but pays a full CLI-boot cost (plus the ~15–20s websocket-fallback
+delay from gotcha #5) every single call.
+
+**claude: no, not anymore — see "Warm claude process pool" below.** `providers/claude.ts`
+now delegates to `process/claudePool.ts`, which keeps `claude -p --input-format
+stream-json` processes alive across requests and reuses them. The full message history is
+still flattened and resent on every call exactly as before (no cross-turn prompt caching,
+no client-visible behavior change) — only the *process* is reused, not any conversation
+state, which is wiped via `/clear` before every single turn.
+
+## Warm claude process pool (`process/claudePool.ts`)
+
+`claude -p` supports `--input-format stream-json`: instead of exiting after one reply, the
+process stays alive reading more turns from stdin. Verified live: a cold `claude -p` call
+costs ~1-3s of pure process boot/auth-check/tool-init overhead on top of the actual model
+API time; a warm process's 2nd+ turn costs ~30-50ms of overhead. Sending `"/clear"` as a
+plain turn resets the conversation in ~30ms — confirmed (by asking the model to recall
+something from before the clear) that it actually wipes context, not just cosmetic output.
+
+How it's used here — a pool of these warm processes, keyed by `(cliModel, extraFlags)`,
+with **`/clear` sent before every single turn** so every HTTP request gets a genuinely blank
+slate regardless of what the process handled before it (same statelessness guarantee as the
+old one-process-per-request design, just without paying to boot a process each time). Each
+worker is retired — not reused — after a random 20-30 uses (chosen once, at spawn time), so
+no single process lives forever accumulating state/memory across hundreds of unrelated
+conversations; retirement closes stdin and lets the CLI exit on its own EOF (SIGTERM only as
+a fallback if it doesn't exit within 3s), since nothing's actually wrong with the process at
+that point. Verified live: watched a worker serve exactly its assigned use-count then get
+replaced by a fresh PID, with no old process left behind.
+
+Design constraints worth knowing before touching this file:
+- **`--model` and `extraFlags` are spawn-time-only** — can't change them on a live process.
+  Pools are keyed by the `(cliModel, extraFlags)` combination, not by model-mapping id, so
+  two mappings that happen to share both transparently share one pool.
+- **`--system-prompt` is ALSO spawn-time-only.** Rather than one pool per distinct system
+  prompt (unbounded cardinality — every client could send a different one), the system
+  prompt is folded into the turn text itself (`"System: ...\n\nUser: ..."`), the same
+  approach `providers/codex.ts` already uses since codex has no system-prompt flag at all.
+  Trade-off worth knowing: a system prompt delivered as part of user-turn text may carry
+  less weight with the model than claude's dedicated `--system-prompt` channel. If that ever
+  matters in practice, the fix is keying pools by a system-prompt hash too (spawning each
+  with a real `--system-prompt`), at the cost of more idle processes when clients send many
+  distinct system prompts.
+- **A worker that times out, gets aborted (client disconnected mid-turn), or exits
+  unexpectedly is never returned to the pool — only ever killed.** Reusing a process we
+  can't prove finished cleanly risks a later request reading output that belongs to an
+  abandoned turn. Only a clean `result` event (whether `is_error` or not — a model-level
+  error doesn't mean the process itself is broken) is considered safe to reuse.
+  `Worker.broken` is the flag that routes a finished turn to `hardKill()` instead of
+  `releaseOrRetire()`.
+- **Changing `cliWorkdir` on the settings page only affects newly spawned workers** —
+  already-idle warm workers keep the `--cwd` they were spawned with until they retire
+  naturally or the server restarts.
+- **Capped at `MAX_TOTAL_WORKERS` (20) live processes, across all keys combined — not per
+  key.** An idle warm process measures ~280-320MB RSS, so an uncapped burst (or one spread
+  across many distinct `cliModel`/`extraFlags` combinations) could exhaust host memory,
+  unlike the pre-pool design where each one-shot process exited the moment its request
+  finished. A request that arrives with no idle worker to reuse and no room under the cap
+  queues (`claudePool.ts`'s `waiters`) rather than failing outright or bypassing the cap
+  with an untracked spawn — bounded by the same `opts.timeoutMs`/`opts.signal` every
+  in-flight turn already respects, so a queued request can't hang past the request's normal
+  timeout. This also (partially) covers "Per-provider concurrency limits/queuing" below for
+  claude specifically; codex still has no such cap.
+- **Idle workers are killed after `IDLE_TIMEOUT_MS` (30 min) of not being reused.** The
+  per-use retirement above bounds a busy worker's total lifetime, but does nothing for a
+  worker that goes idle and just sits there — without this, a traffic burst that fills the
+  pool and then goes quiet would leave all of it (up to `MAX_TOTAL_WORKERS` processes)
+  resident indefinitely, holding memory for no ongoing benefit.
+- **Graceful shutdown matters more now than it used to.** A one-shot process only ever
+  lived for the duration of one request, so an abruptly killed server orphaning it was a
+  narrow window. Warm workers deliberately outlive individual requests, so `server.ts`
+  installs `SIGTERM`/`SIGINT` handlers that call `shutdownClaudePool()` before exiting —
+  verified live (sent a real SIGTERM to a running server with an active warm worker,
+  confirmed the worker was gone, not orphaned). A `SIGKILL`'d server (or a crash) still
+  can't run this hook — same caveat any Node process has.
 
 ## Open optimizations for future development
 
-Roughly ordered by likely value; none of these are started.
+Roughly ordered by likely value; the warm process pool below is the only one of these
+shipped so far (and only for claude, not codex — see its own bullet).
 
 ### Performance / cost
 - **Session reuse for multi-turn conversations.** Keep a server-side map of some
@@ -176,15 +257,25 @@ Roughly ordered by likely value; none of these are started.
   re-flattening and re-sending the whole history every time. Would recover cross-turn
   prompt caching and cut the growing-transcript cost, at the price of real session
   lifecycle management (expiry, cleanup, concurrent-use-of-one-session handling).
-- **Warm process pool** to avoid paying CLI boot cost (auth check, MCP/tool init even
-  though tools are disabled, and codex's ~15–20s websocket-fallback delay in some network
-  environments) on every single call. Much harder than session reuse to do safely given
-  `-p`/`exec`'s one-shot-per-invocation design — would likely need the CLIs' own
-  server/daemon modes (e.g. `codex mcp-server`/`app-server`) rather than repeated `exec`.
-- **Per-provider concurrency limits / queuing.** There's currently no cap on how many
-  subprocesses can run at once — a burst of requests spawns a matching burst of `claude`/
-  `codex` processes. Fine for a personal/internal wrapper, not fine if this is ever exposed
-  more broadly.
+- **Warm process pool — done for claude, not for codex.** See "Warm claude process pool"
+  above. `codex exec` has no equivalent stdin-keep-alive mode to build on (confirmed live —
+  no `--input-format` flag exists on `exec`), so it still pays full CLI-boot cost, plus its
+  ~15–20s websocket-fallback delay, on every single call. The only programmatic route to
+  something similar for codex is its `[EXPERIMENTAL]` `app-server`/`exec-server` daemon — a
+  bespoke, undocumented JSON-RPC protocol (150+ methods; there's a `generate-ts`/
+  `generate-json-schema` subcommand because no client library exists yet), with no
+  confirmed "reset this thread in place" method (only `thread/start`, which creates a new
+  thread, not an in-place clear). A much bigger, riskier lift than the claude change — worth
+  a separately-scoped investigation if warm codex processes ever become a priority, not an
+  extension of claudePool.ts's approach.
+- **Per-provider concurrency limits / queuing — done for claude, not for codex.**
+  `claudePool.ts` caps total warm workers at `MAX_TOTAL_WORKERS` and queues requests beyond
+  that (see "Warm claude process pool" above). `codex exec` is still a fresh one-shot
+  `spawnManaged` process per request with no cap at all — a burst of codex-routed requests
+  spawns a matching burst of `codex` processes. Fine for a personal/internal wrapper, not
+  fine if this is ever exposed more broadly. Bounding it would mean giving `spawnManaged`
+  (or a wrapper around it) the same kind of global-cap-plus-queue `claudePool.ts` already
+  has for claude.
 
 ### Correctness / robustness
 - **Concurrent `config.json` writes aren't mutex'd.** The atomic tmp-file+rename in
@@ -226,11 +317,13 @@ Roughly ordered by likely value; none of these are started.
   HTTP exposure), a way to surface tool-call events in OpenAI's `tool_calls` response
   shape, and a hard rethink of the "never hangs" guarantee once approval prompts become a
   real possibility again.
-- **Graceful shutdown.** `server.ts` has no `SIGTERM`/`SIGINT` handler — in-flight
-  subprocesses aren't given a chance to finish or be cleanly killed on process exit today;
-  they'd just become orphaned or die with their parent depending on OS behavior. Worth
-  adding an explicit shutdown hook that tracks in-flight `spawnManaged` processes and
-  terminates them.
+- **Graceful shutdown — partially done.** `server.ts` now has `SIGTERM`/`SIGINT` handlers,
+  but they only call `shutdownClaudePool()` (kills warm claude workers — see above). A
+  one-shot `spawnManaged` process (codex, currently) that's mid-request when the server
+  exits still isn't tracked or terminated — it'll become orphaned or die with its parent
+  depending on OS behavior, same as before this change. Closing that gap would mean
+  `spawnManaged` registering each process in a shared in-flight set that the shutdown
+  handler also drains.
 - **`logs.ts`'s event log is intentionally minimal** (ring buffer capped at 200,
   chat-completions only, no filtering/search in the UI). It stores full request/response
   content (`input`/`output` on `LogEntry`, viewable per-row in the settings UI via a "View"

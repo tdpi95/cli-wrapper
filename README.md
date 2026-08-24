@@ -134,9 +134,20 @@ ask if you want that built out; see `AGENTS.md`'s open optimizations for the tra
 
 ## Notes / limitations
 
-- **Stateless**: each request spawns a fresh CLI subprocess; there is no session
-  continuity between requests (matches the OpenAI API's own stateless chat-completions
-  semantics — clients resend full history each call).
+- **Stateless from the outside, warm on the inside (claude only)**: every request still
+  gets a completely blank conversation and the full message history is still resent and
+  reprocessed every call — no client-visible behavior change and no cross-turn caching.
+  But under the hood, `claude`-routed requests reuse a small pool of already-running
+  `claude` processes instead of spawning a new one each time (each is sent a `/clear`
+  before every request, and retired after 20-30 requests so none runs forever). This cuts
+  the ~1-3s CLI boot/auth-check overhead most requests would otherwise pay. `codex`-routed
+  requests still spawn a fresh subprocess every time — see AGENTS.md if you're curious why
+  the same trick doesn't apply there.
+- **Claude warm-pool cap**: at most 20 `claude` processes run at once, shared across all
+  models routed to it (an idle one holds ~300MB RSS). A burst past that cap queues rather
+  than failing outright, bounded by the same CLI timeout as any other request — so under
+  heavy concurrent load a request may wait for a slot before it starts, rather than erroring
+  immediately. `codex`-routed requests have no such cap.
 - **Chat-only**: both CLIs run with tools/file/shell access disabled. `claude` uses
   `--tools ""`; `codex` uses `--sandbox read-only`. Neither can modify your filesystem or
   run commands via this wrapper.

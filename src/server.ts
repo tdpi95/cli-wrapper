@@ -4,6 +4,7 @@ import path from "node:path";
 import { loadEnv } from "./env.js";
 import { initConfig, resolveConfigExamplePath, getSettings } from "./config.js";
 import { initLogPersistence } from "./logs.js";
+import { shutdownClaudePool } from "./process/claudePool.js";
 import { buildApp } from "./app.js";
 
 const env = loadEnv();
@@ -27,3 +28,15 @@ app.listen(port, () => {
   console.log(`activity log persistence: ${logFilePath ?? "disabled (in-memory only)"}`);
   console.log(`settings (no auth required): http://localhost:${port}/settings`);
 });
+
+// The claude provider now keeps warm processes running between requests
+// (see process/claudePool.ts) — unlike the old one-shot-per-request design,
+// those can outlive a single HTTP request, so they need an explicit exit
+// hook or a killed/Ctrl-C'd server would leave them orphaned.
+function shutdown(signal: NodeJS.Signals): void {
+  console.log(`${signal} received, shutting down warm claude processes...`);
+  shutdownClaudePool();
+  process.exit(0);
+}
+process.on("SIGTERM", shutdown);
+process.on("SIGINT", shutdown);
