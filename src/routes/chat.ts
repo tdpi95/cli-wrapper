@@ -8,6 +8,7 @@ import { ModelNotFoundError, TimeoutError, ValidationError, toApiError } from ".
 import type { ChatCompletionRequest } from "../openai/types.js";
 import { addLogEntry } from "../logs.js";
 import type { Usage } from "../providers/types.js";
+import { REASONING_EFFORT_VALUES, type ReasoningEffort } from "../types/config.js";
 
 // Auth is applied at the app-assembly level (see app.ts), scoped by URL path
 // prefix — not here — since a router-internal `.use(auth)` with no path
@@ -44,6 +45,21 @@ export function chatRouter(): Router {
       }
       providerForLog = mapping.provider;
 
+      // The mapping's own default effort, optionally overridden by the
+      // request — but only if the mapping opted into that. If it didn't,
+      // an incoming `reasoning_effort` is silently ignored, same as any
+      // other unsupported OpenAI field (temperature, top_p, etc.) rather
+      // than erroring — it's not a typo'd required field, just a request
+      // for a capability this mapping hasn't turned on.
+      let reasoningEffort: ReasoningEffort | undefined = mapping.reasoningEffort;
+      if (mapping.allowReasoningEffortOverride && typeof body.reasoning_effort === "string" && body.reasoning_effort.trim() !== "") {
+        const requested = body.reasoning_effort.trim();
+        if (!REASONING_EFFORT_VALUES.includes(requested as ReasoningEffort)) {
+          throw new ValidationError(`\`reasoning_effort\` must be one of: ${REASONING_EFFORT_VALUES.join(", ")}`);
+        }
+        reasoningEffort = requested as ReasoningEffort;
+      }
+
       const { systemPrompt, transcript } = flattenMessages(body.messages as ChatMessage[]);
       if (captureContent) {
         inputForLog = systemPrompt.trim() !== "" ? `System: ${systemPrompt}\n\n${transcript}` : transcript;
@@ -63,6 +79,7 @@ export function chatRouter(): Router {
       const runOpts = {
         cliModel: mapping.cliModel,
         extraFlags: mapping.extraFlags,
+        reasoningEffort,
         systemPrompt,
         transcript,
         timeoutMs: settings.cliTimeoutMs,

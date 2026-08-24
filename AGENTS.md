@@ -163,6 +163,48 @@ These are documented in detail as comments at their fix sites, but the summary:
    `item.completed`/`type:"error"` JSONL event, as fatal by itself for codex — only "no
    `agent_message` ever arrived" is failure (see `providers/codex.ts`).
 
+6. **Both CLIs leak this very repo's own context into chat completions if `cliWorkdir`
+   sits inside it (as the default `./.cli-wrapper-workspace` does) — and claude leaks it
+   even from a directory outside the repo, whenever a request carries no system prompt.**
+   Verified live: a plain chat request with an empty system prompt got answers back citing
+   this repo's actual AGENTS.md content and a real `git log` commit hash — not a
+   hallucination, and not fixed by `--tools ""` or `--setting-sources ""`, which only gate
+   tool *execution* and settings.json, not this.
+   - **claude**: an omitted/empty `--system-prompt` doesn't mean "no system prompt" — it
+     means "fall back to claude's own default 'Claude Code' system prompt," which bakes in
+     cwd, git status, and (via CLAUDE.md auto-discovery walking up to the repo root) this
+     repo's own `CLAUDE.md`/`AGENTS.md`. Fix: `claudePool.ts` now passes `--system-prompt
+     ""` unconditionally at spawn time (it's spawn-time-only, like `--model`) — this alone
+     fully neutralizes the default persona/context, confirmed by direct A/B testing. The
+     caller's actual system prompt, if any, still reaches the model via
+     `buildTurnText()`'s turn-text folding, unaffected by this.
+   - **codex**: separately, `codex exec` auto-discovers and injects the nearest `AGENTS.md`
+     up the directory tree (a different mechanism from claude's CLAUDE.md — codex does this
+     regardless of system-prompt content, since it has no `--system-prompt` flag at all).
+     Fix: `providers/codex.ts` now passes `-c project_doc_max_bytes=0`, confirmed live to
+     suppress it.
+   - Either leak only reproduces when `cliWorkdir` (or a parent of it) contains a
+     `CLAUDE.md`/`AGENTS.md`/`.git` — an operator running this wrapper from inside some
+     *other* project's checkout would leak *that* project's context instead. The fixes
+     above are general, not specific to this repo.
+
+7. **`initConfig()` used to regenerate the API key on every single startup whenever
+   `settings.apiKey` was `""` — even when that `""` was already sitting on disk as a
+   deliberate prior choice, not a fresh/migrating config.** The bug: the "generate a key if
+   blank" check ran unconditionally after loading `raw.settings`, with no way to distinguish
+   "this config predates the settings-page feature entirely" (where generating one is
+   correct — see first-run/migration below) from "an operator already blanked the field on
+   `/settings` and saved" (where it must be left alone). Verified live: wrote a config.json
+   with an explicit `"apiKey": ""`, started the server twice, and got a fresh "Generated a
+   new API key" message + a rewritten file both times — meaning restarting after
+   deliberately disabling `/v1/*` auth silently turned it back on, directly contradicting the
+   documented invariant in "Settings has no auth, by design" above. Fixed: generation now
+   only happens in the `!raw.settings` branch (a real version-1-style migration, where
+   there's no prior explicit choice to respect) or on genuine first-run (`config.json` didn't
+   exist yet) — an existing config's `settings.apiKey`, blank or not, is now always respected
+   verbatim. Verified live again post-fix: same explicit-`""` config across two startups, no
+   regeneration, no rewrite.
+
 ## Is a new CLI process spawned per request?
 
 **codex: yes, always.** Every `POST /v1/chat/completions` routed to a codex model flattens
@@ -244,6 +286,82 @@ Design constraints worth knowing before touching this file:
   confirmed the worker was gone, not orphaned). A `SIGKILL`'d server (or a crash) still
   can't run this hook — same caveat any Node process has.
 
+## Reasoning effort control and content (`ModelMapping.reasoningEffort`/`allowReasoningEffortOverride`)
+
+A model mapping can set a default reasoning effort and optionally let a per-request
+`reasoning_effort` field (OpenAI's own chat.completions field name for reasoning models)
+override it — verified live end-to-end (config round-trip, both providers' spawn args, and
+that requests actually landed on the right warm claude process by effort level). When effort
+is requested, the actual reasoning/thinking content (when the CLI produces any) is also
+captured and returned as `message.reasoning_content` (non-streaming) or `delta
+.reasoning_content` chunks (streaming) — the de facto OpenAI-compatible field name several
+tools already read (DeepSeek, LiteLLM, Open WebUI), not an official OpenAI field since
+chat.completions has no standard one. `RunResult.reasoningText`/`StreamChunk`'s `"reasoning"`
+kind carry it internally (`providers/types.ts`); it's `undefined`, never `""`, when nothing
+was captured, so "no reasoning happened" and "reasoning happened but content was empty" stay
+distinguishable up to the OpenAI response shape, which simply omits the key in the former
+case (see `openai/transform.ts`).
+
+- **Shared six-value enum** (`REASONING_EFFORT_VALUES`/`ReasoningEffort` in
+  `types/config.ts`): `minimal`/`low`/`medium`/`high`/`xhigh`/`max`. Neither CLI accepts all
+  six — claude's `--effort` has no `minimal`, codex's `-c model_reasoning_effort=` has
+  neither `xhigh` nor `max` — but same as `cliModel` (gotcha #4), this is validated only for
+  typos, not provider/account correctness. Picking a value the mapping's actual provider
+  doesn't support surfaces as a CLI-level error at request time, not a config-save-time
+  rejection.
+- **codex** (`providers/codex.ts`): trivial — it's already a one-shot spawn per request, so
+  `-c model_reasoning_effort=<value>` is appended fresh to that request's argv when resolved,
+  bundled with `-c model_reasoning_summary=detailed -c show_raw_agent_reasoning=true` (all
+  three together — verified live that any one or two alone produce nothing) so its
+  `item.completed` events of type `"reasoning"` actually appear. Each is a short summary (not
+  raw chain-of-thought — codex/GPT-5 don't expose that), and a turn can emit several before
+  its `agent_message`; `consume()` yields each as its own `{type: "reasoning"}` event, joined
+  with `\n\n` for the non-streaming `reasoningText`, or forwarded as individual `"reasoning"`
+  StreamChunks (each one whole, no token-level deltas — same as `agent_message`) when
+  streaming. These overrides are only added when `reasoningEffort` is set, not unconditionally
+  — a plain request that never asks for reasoning shouldn't pay for the extra
+  summary-generation latency by default.
+- **claude** (`process/claudePool.ts`): `--effort` is spawn-time-only like `--model`, so it's
+  folded into the pool key — `PoolKeyParts` and `poolKeyFor()` now include `reasoningEffort`.
+  Unlike system prompt (deliberately *not* keyed — unbounded cardinality), this is a safe key
+  to add: only 6 legal values, a small bounded multiplier on pool size, still capped overall
+  by `MAX_TOTAL_WORKERS`. Verified live: two mappings resolving to the same effective
+  `(cliModel, extraFlags, reasoningEffort)` tuple shared one warm process; a third mapping
+  resolving to a different tuple got its own. A request with no effort resolved gets no
+  `--effort` flag at all — identical to pre-this-feature behavior.
+- **claude's reasoning content** (`process/claudePool.ts`'s `waitForResult`/
+  `TurnDeltaCallbacks`): real `content_block_start`(`type:"thinking"`)/`content_block_delta`
+  (`delta.type:"thinking_delta"`) stream-json events exist and are wired up (only possible
+  when `--effort` was passed, i.e. `reasoningEffort` was set). **Caveat verified live**: even
+  at `--effort max` on opus, the actual `thinking` text came back as an empty string on every
+  delta while `usage.output_tokens_details.thinking_tokens` was still non-zero and billed —
+  some accounts/plans redact the content but not the cost. `onReasoningDelta` skips empty
+  deltas rather than forwarding a stream of no-op `reasoning_content` chunks (verified live:
+  without this, a single turn emitted three empty-string `reasoning_content` SSE chunks before
+  any real content); whether real thinking text ever comes through depends on the account/
+  plan, not on this wrapper's code.
+- **Request-time resolution** (`routes/chat.ts`): the mapping's `reasoningEffort` is the
+  default; a request's `reasoning_effort` field only overrides it if the mapping has
+  `allowReasoningEffortOverride: true`. If that's false, an incoming `reasoning_effort` is
+  **silently ignored** — same convention as `temperature`/`max_tokens`/etc. (unsupported
+  fields are ignored, not errored) — rather than a 400, since sending it isn't necessarily a
+  mistake (some client libraries set it by default). If override *is* allowed but the value
+  isn't one of the six, that's a real 400 `invalid_request` — the mapping opted into this
+  field being meaningful, so a garbage value is a genuine client error, not a passthrough.
+- **Settings page**: the model routing table/form now has a "Default reasoning effort"
+  select and an "Allow per-request override" checkbox alongside the existing fields. The
+  select's options are rebuilt per-provider client-side (`REASONING_EFFORT_BY_PROVIDER`/
+  `populateReasoningEffortOptions()` in `settings.html`) — claude's 5, codex's 4 — purely as
+  a UI nicety pointed at the right subset; the server-side validation stays the shared
+  6-value enum regardless (see above), so this never blocks a value the API itself would
+  accept. Two behaviors that are easy to get backwards if touching this: switching the
+  provider dropdown *drops* a previously-selected value that isn't valid for the new
+  provider (no `allowExtra`, defaults to the select's current value as "previous"); loading
+  an existing mapping for edit instead calls it with `allowExtra: true` so a legacy value
+  that's off-list for its own provider (possible since the server never rejected it) is kept
+  as an extra option rather than silently disappearing — and reverting to a blank default —
+  the moment you open that mapping and save again without touching the field.
+
 ## Open optimizations for future development
 
 Roughly ordered by likely value; the warm process pool below is the only one of these
@@ -311,6 +429,19 @@ shipped so far (and only for claude, not codex — see its own bullet).
 - **`stream_options.include_usage` support** — currently not implemented; usage is only
   returned in non-streaming responses, matching baseline OpenAI behavior but not the
   opt-in extension some clients use.
+- **Tool use / function calling is an intentional non-goal, not a gap** — verified live, not
+  just assumed. Gave `claude -p` `--tools "Bash"` in its default non-interactive permission
+  mode and asked it to run a shell command: it auto-executed the tool itself with no prompt
+  (`num_turns: 2` internally, a synthetic `tool_result` folded back in, then final text) —
+  there's no point where either CLI's `-p`/`exec` invocation stops and hands an unexecuted
+  tool call back to an external caller to run and return a result for, which is the entire
+  contract OpenAI/Anthropic's real function-calling API depends on. This isn't a missing
+  flag; it's how the CLIs' one-shot agent loop is structured. Enabling `--tools` at all would
+  also reopen real shell/file execution, conflicting with this wrapper's core "chat-only, no
+  agentic tools" guarantee. Not planned; see the conversation this was verified in if
+  revisiting — a prompt-based simulation (describe the client's tools in-prompt, parse a
+  structured reply back into `tool_calls`) is the only halfway-plausible route found, and
+  it's unreliable, not real tool-use semantics.
 - **Optional agentic/tool mode** was explicitly scoped out of v1 (see `PLAN.md`'s Context
   section) in favor of pure chat completions. If ever revisited: needs a real sandboxing
   decision (per-request temp workdir at minimum, likely a container or VM boundary given

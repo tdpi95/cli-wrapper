@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import { DEFAULT_SETTINGS, type ModelMapping, type WrapperConfig, type WrapperSettings } from "./types/config.js";
+import { DEFAULT_SETTINGS, REASONING_EFFORT_VALUES, type ModelMapping, type ReasoningEffort, type WrapperConfig, type WrapperSettings } from "./types/config.js";
 import { ValidationError, NotFoundError } from "./errors.js";
 
 let configPath: string;
@@ -63,17 +63,29 @@ export function initConfig(resolvedConfigPath: string, examplePath: string): voi
   let settings: WrapperSettings;
   let apiKeySource: "legacy-env" | "generated" | "unchanged" = "unchanged";
   if (!raw.settings) {
+    // Migrating a pre-settings-page (version 1) config: there's no prior
+    // explicit apiKey choice on disk to respect here at all, so this is the
+    // one case (besides first-run, above) where generating a fresh key is
+    // correct rather than clobbering something the operator set.
     const legacy = settingsFromLegacyEnv();
     settings = { ...DEFAULT_SETTINGS, ...legacy };
-    if (legacy.apiKey) apiKeySource = "legacy-env";
+    if (legacy.apiKey) {
+      apiKeySource = "legacy-env";
+    } else if (!settings.apiKey.trim()) {
+      settings.apiKey = generateApiKey();
+      apiKeySource = "generated";
+    }
     changed = true;
   } else {
+    // A `settings` block already exists on disk — respect its apiKey
+    // verbatim, including an explicit "" (auth intentionally disabled on
+    // /v1/*, chosen on the settings page). Never regenerate here: doing so
+    // unconditionally on every startup was a real bug — it silently
+    // re-enabled auth with a fresh random key on every restart after an
+    // operator deliberately blanked it, contradicting the documented
+    // invariant that a blank apiKey only ever happens via an explicit,
+    // visible edit (see "Settings has no auth, by design" in AGENTS.md).
     settings = { ...DEFAULT_SETTINGS, ...raw.settings };
-  }
-  if (!settings.apiKey.trim()) {
-    settings.apiKey = generateApiKey();
-    apiKeySource = "generated";
-    changed = true;
   }
 
   const config: WrapperConfig = { version: 2, settings, models: raw.models };
@@ -164,6 +176,12 @@ function validateMapping(m: Partial<ModelMapping>): asserts m is ModelMapping {
   }
   if (m.extraFlags !== undefined && !Array.isArray(m.extraFlags)) {
     throw new ValidationError("`extraFlags` must be an array of strings if provided");
+  }
+  if (m.reasoningEffort !== undefined && !REASONING_EFFORT_VALUES.includes(m.reasoningEffort as ReasoningEffort)) {
+    throw new ValidationError(`\`reasoningEffort\` must be one of: ${REASONING_EFFORT_VALUES.join(", ")}`);
+  }
+  if (m.allowReasoningEffortOverride !== undefined && typeof m.allowReasoningEffortOverride !== "boolean") {
+    throw new ValidationError("`allowReasoningEffortOverride` must be a boolean");
   }
 }
 

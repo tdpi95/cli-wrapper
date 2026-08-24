@@ -21,6 +21,13 @@ import type { RunOptions, RunResult, StopReason, StreamChunk, Usage } from "../p
 // - --model (and any extraFlags) are spawn-time-only — can't change them on
 //   a live process. Pools are keyed by (cliModel, extraFlags), not by model
 //   mapping id, so two mappings that happen to share both reuse one pool.
+// - --effort is spawn-time-only too, so it's folded into the same pool key
+//   (cliModel, extraFlags, reasoningEffort). Unlike system prompt below,
+//   this is fine to key on — only 6 legal values (see ReasoningEffort in
+//   types/config.ts), a small bounded multiplier on pool size rather than
+//   unbounded cardinality, and MAX_TOTAL_WORKERS still caps the worst case.
+//   A request with no reasoningEffort gets no --effort flag at all — same
+//   as today's behavior for every mapping that doesn't set one.
 // - --system-prompt is ALSO spawn-time-only. Rather than one pool per
 //   distinct system prompt (unbounded cardinality — every client could send
 //   a different one), the system prompt is folded into the turn text itself
@@ -72,6 +79,7 @@ const IDLE_TIMEOUT_MS = 30 * 60 * 1000;
 interface PoolKeyParts {
   cliModel: string;
   extraFlags?: string[];
+  reasoningEffort?: string;
 }
 
 interface TurnHandlers {
@@ -104,8 +112,8 @@ const idleWorkers = new Map<string, Worker[]>();
 const allWorkers = new Set<Worker>();
 const waiters: Waiter[] = [];
 
-function poolKeyFor({ cliModel, extraFlags }: PoolKeyParts): string {
-  return JSON.stringify([cliModel, extraFlags ?? []]);
+function poolKeyFor({ cliModel, extraFlags, reasoningEffort }: PoolKeyParts): string {
+  return JSON.stringify([cliModel, extraFlags ?? [], reasoningEffort ?? null]);
 }
 
 function randomRetireAfter(): number {
@@ -136,8 +144,22 @@ function spawnWorker(key: string, spawnArgs: PoolKeyParts, workdir: string): Wor
     "--strict-mcp-config",
     "--setting-sources",
     "",
+    // Without this, an empty/omitted --system-prompt makes claude fall back
+    // to its own default "Claude Code" system prompt — which bakes in cwd,
+    // git status, and (via CLAUDE.md auto-discovery) this very repo's
+    // AGENTS.md content, since cliWorkdir sits inside this git tree. Verified
+    // live: identical requests leaked "warm claude process pool" / actual
+    // commit hashes into responses without this flag, and were clean with
+    // it. Passing "" here unconditionally neutralizes that default; the
+    // caller's actual system prompt (if any) is still delivered separately,
+    // folded into the turn text by buildTurnText() below — --system-prompt
+    // itself can't carry it because it's spawn-time-only (see the pool
+    // design comment at the top of this file).
+    "--system-prompt",
+    "",
     "--model",
     spawnArgs.cliModel,
+    ...(spawnArgs.reasoningEffort ? ["--effort", spawnArgs.reasoningEffort] : []),
     ...(spawnArgs.extraFlags ?? []),
   ];
   const child = spawn(CMD, args, { cwd: workdir, shell: false, stdio: ["pipe", "pipe", "pipe"] });
@@ -355,15 +377,31 @@ function sendUserTurn(worker: Worker, text: string): void {
   }
 }
 
-/** Resolves with the turn's "result" event; forwards text deltas via onDelta as they stream in. Rejects only if the process itself dies mid-turn. */
-function waitForResult(worker: Worker, onDelta?: (text: string) => void): Promise<any> {
+interface TurnDeltaCallbacks {
+  onTextDelta?: (text: string) => void;
+  /**
+   * Extended-thinking content, when the model produces any (only possible
+   * when reasoningEffort was set at spawn time — see spawnWorker's --effort).
+   * Verified live: even at --effort max, the actual `thinking` text can come
+   * back as an empty string on every delta while thinking_tokens is still
+   * non-zero in usage — some accounts/plans redact the content but still
+   * bill for it. That's not a bug here; onReasoningDelta just won't fire
+   * (or will fire with "") in that case, same as if no thinking happened.
+   */
+  onReasoningDelta?: (text: string) => void;
+}
+
+/** Resolves with the turn's "result" event; forwards deltas via the callbacks as they stream in. Rejects only if the process itself dies mid-turn. */
+function waitForResult(worker: Worker, callbacks?: TurnDeltaCallbacks): Promise<any> {
   return new Promise((resolve, reject) => {
     worker.currentTurn = {
       onEvent(evt) {
         if (evt.type === "stream_event") {
           const inner = evt.event;
           if (inner?.type === "content_block_delta" && inner.delta?.type === "text_delta") {
-            onDelta?.(inner.delta.text);
+            callbacks?.onTextDelta?.(inner.delta.text);
+          } else if (inner?.type === "content_block_delta" && inner.delta?.type === "thinking_delta") {
+            callbacks?.onReasoningDelta?.(inner.delta.thinking ?? "");
           }
         } else if (evt.type === "result") {
           worker.currentTurn = null;
@@ -460,11 +498,12 @@ async function clearConversation(worker: Worker, opts: RunOptions): Promise<void
 }
 
 export async function runWarmNonStreaming(opts: RunOptions): Promise<RunResult> {
-  const worker = await acquireWorker({ cliModel: opts.cliModel, extraFlags: opts.extraFlags }, opts.workdir, opts);
+  const worker = await acquireWorker({ cliModel: opts.cliModel, extraFlags: opts.extraFlags, reasoningEffort: opts.reasoningEffort }, opts.workdir, opts);
   try {
     await clearConversation(worker, opts);
 
-    const result = waitForResult(worker);
+    let reasoningText = "";
+    const result = waitForResult(worker, { onReasoningDelta: (text) => { reasoningText += text; } });
     sendUserTurn(worker, buildTurnText(opts));
     const evt = await raceWithTimeoutAndAbort(result, worker, opts);
     worker.usesRemaining--;
@@ -474,6 +513,7 @@ export async function runWarmNonStreaming(opts: RunOptions): Promise<RunResult> 
     }
     return {
       text: evt.result,
+      reasoningText: reasoningText || undefined,
       usage: usageFrom(evt.usage),
       stopReason: mapStopReason(evt.stop_reason, false),
     };
@@ -493,7 +533,7 @@ export async function* runWarmStreaming(opts: RunOptions): AsyncIterable<StreamC
     // throwing out of the generator, matching codex.ts's error-chunk style.
     let worker: Worker;
     try {
-      worker = await acquireWorker({ cliModel: opts.cliModel, extraFlags: opts.extraFlags }, opts.workdir, opts);
+      worker = await acquireWorker({ cliModel: opts.cliModel, extraFlags: opts.extraFlags, reasoningEffort: opts.reasoningEffort }, opts.workdir, opts);
     } catch (err) {
       queue.push({ kind: "error", message: err instanceof Error ? err.message : String(err) });
       queue.end();
@@ -503,12 +543,26 @@ export async function* runWarmStreaming(opts: RunOptions): AsyncIterable<StreamC
     try {
       await clearConversation(worker, opts);
 
-      const result = waitForResult(worker, (text) => {
-        if (!roleSent) {
-          roleSent = true;
-          queue.push({ kind: "role" });
-        }
-        queue.push({ kind: "delta", text });
+      const result = waitForResult(worker, {
+        onTextDelta: (text) => {
+          if (!roleSent) {
+            roleSent = true;
+            queue.push({ kind: "role" });
+          }
+          queue.push({ kind: "delta", text });
+        },
+        onReasoningDelta: (text) => {
+          // claude can emit thinking_delta events with an empty `thinking`
+          // string when the account/plan redacts the content but still bills
+          // for it (see the TurnDeltaCallbacks comment above) — skip those
+          // rather than forwarding a stream of no-op reasoning_content chunks.
+          if (!text) return;
+          if (!roleSent) {
+            roleSent = true;
+            queue.push({ kind: "role" });
+          }
+          queue.push({ kind: "reasoning", text });
+        },
       });
       sendUserTurn(worker, buildTurnText(opts));
       const evt = await raceWithTimeoutAndAbort(result, worker, opts);

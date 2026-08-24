@@ -154,6 +154,23 @@ ask if you want that built out; see `AGENTS.md`'s open optimizations for the tra
 - **Unsupported OpenAI fields**: `temperature`, `max_tokens`, `top_p`, etc. are accepted in
   the request body but ignored — the underlying CLIs don't expose equivalent controls
   through this wrapper.
+- **Reasoning effort and content**: a model mapping can set a default reasoning effort
+  (`minimal` / `low` / `medium` / `high` / `xhigh` / `max`) on the settings page, and
+  optionally allow a request's own `reasoning_effort` field (same field name real OpenAI
+  reasoning models use) to override it for that call. Off by default — if a mapping hasn't
+  enabled the override, a `reasoning_effort` sent to it is silently ignored, same as any
+  other unsupported field above. When effort is requested, the response also includes a
+  `reasoning_content` field (`message.reasoning_content` non-streaming, `delta
+  .reasoning_content` chunks streaming — the same field name DeepSeek/LiteLLM/Open WebUI
+  already use) whenever the underlying CLI produced any visible reasoning text. Note for
+  claude specifically: some accounts/plans redact the actual thinking text while still
+  billing the tokens for it — in that case `reasoning_content` just won't appear, even
+  though effort/cost was genuinely spent.
+- **Tool use / function calling isn't supported** — not just unimplemented, but not
+  possible with these CLIs as invoked here: both run their tool loop to completion
+  internally and never hand an unexecuted call back out for a client to run and return a
+  result for, which real OpenAI/Anthropic function-calling requires. See AGENTS.md for how
+  this was verified.
 - **Codex streaming**: the Codex CLI doesn't emit token-level deltas, so a "streaming"
   codex response arrives as a single content chunk followed by the completion signal,
   rather than incremental text.
