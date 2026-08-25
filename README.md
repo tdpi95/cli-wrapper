@@ -15,6 +15,10 @@ host — no separate API key to provision for the model calls themselves.
   requests instead of paying a full CLI boot every call, while staying fully stateless from
   the client's point of view. Live pool status (busy/idle workers, queued requests) is
   viewable on the settings page.
+- **Optional warm pool for `codex`** (opt-in, off by default) — routes requests through a
+  small pool of long-lived `codex app-server` daemons instead of spawning a fresh `codex`
+  process every call. Each request still gets its own isolated, ephemeral turn — see
+  "Configuration" below.
 - **Reasoning effort control** — set a default per model mapping, optionally let a request's
   own `reasoning_effort` field override it, and get any reasoning/thinking content back as
   `reasoning_content`.
@@ -88,6 +92,8 @@ Everything below lives in `config.json` and is editable live from `http://localh
 - **API port**, **CLI timeout**, **CLI working directory**.
 - **Activity log**: whether full prompt/response text is captured, and an optional file
   path to persist the last 200 entries to disk (see "Recent activity" below).
+- **Codex warm pool** (`codexUseWarmPool`, off by default) and **pool size**
+  (`codexPoolSize`, default `2`) — see "Codex warm pool (experimental)" below.
 
 ### Model routing
 
@@ -107,6 +113,23 @@ maps a client-facing `model` name to an actual CLI invocation:
 
 `config.example.json` has working examples of each of these, including a plain mapping per
 provider and one web-search-enabled mapping per provider.
+
+### Codex warm pool (experimental)
+
+By default, every `codex`-routed request spawns a fresh `codex exec` process (no shared
+state between requests, but a full CLI-boot cost every call). Turning on `codexUseWarmPool`
+on the settings page (or in `config.json`) instead routes requests through a small pool of
+long-lived `codex app-server` daemons — `codexPoolSize` (default `2`) controls how many.
+Each request still gets its own isolated, ephemeral thread/turn on whichever daemon is least
+busy, so client-visible behavior (statelessness, no cross-request bleed) is unchanged; only
+the process-boot cost is amortized, the same idea as the `claude` pool above.
+
+This is opt-in and marked experimental because `codex app-server`'s JSON-RPC protocol has no
+documented backwards-compatibility guarantee across `codex` CLI versions (the subcommand
+itself is still labeled `[experimental]` in `codex --help`) — a `codex` upgrade could change
+it without warning. Turning the setting off does not stop already-running daemons; they sit
+idle until the server restarts. See `AGENTS.md`'s "Warm codex app-server pool" section for
+the full design, verified-live numbers, and gotchas.
 
 Only three things remain env vars — see `.env.example`:
 
@@ -156,8 +179,11 @@ The same page has a **Claude process pool** panel (auto-refreshing every 3s, `GE
 /api/settings/pool-status`) showing every live warm `claude` process — PID, model,
 reasoning effort, web search, busy/idle, and remaining uses before it retires — plus a
 summary of how many are running against the pool's cap and how many requests, if any, are
-queued waiting for a free one. `codex` has no persistent pool (a fresh process per request,
-so nothing to show), and the panel says so.
+queued waiting for a free one. By default `codex` has no persistent pool (a fresh process
+per request, so nothing to show, and the panel says so) — turning on `codexUseWarmPool`
+(see "Codex warm pool (experimental)" above) switches this to a **Codex daemon pool** panel
+instead, backed by `GET /api/settings/codex-pool-status`, showing each live `codex
+app-server` daemon's PID, in-flight turn count, and total turns served.
 
 It also has a **Recent activity** panel (auto-refreshing every 4s) showing the last 200
 chat-completion requests — model, provider, streaming, status, duration, token usage, and
@@ -218,8 +244,9 @@ ask if you want that built out; see `AGENTS.md`'s open optimizations for the tra
   `claude` processes instead of spawning a new one each time (each is sent a `/clear`
   before every request, and retired after 20-30 requests so none runs forever). This cuts
   the ~1-3s CLI boot/auth-check overhead most requests would otherwise pay. `codex`-routed
-  requests still spawn a fresh subprocess every time — see AGENTS.md if you're curious why
-  the same trick doesn't apply there.
+  requests still spawn a fresh subprocess every time by default — see "Codex warm pool
+  (experimental)" above for the opt-in alternative, and AGENTS.md for why it isn't the
+  default the way claude's pool is.
 - **Claude warm-pool cap**: at most 20 `claude` processes run at once, shared across all
   models routed to it (an idle one holds ~300MB RSS). A burst past that cap queues rather
   than failing outright, bounded by the same CLI timeout as any other request — so under
