@@ -267,9 +267,12 @@ These are documented in detail as comments at their fix sites, but the summary:
    allows direct, non-proxied egress to those two domains at all — on a network where only
    the proxy has any route out, forcing a bypass would turn "slow" into "broken" instead.
 
-6. **Both CLIs leak this very repo's own context into chat completions if `cliWorkdir`
-   sits inside it (as the default `./.cli-wrapper-workspace` does) — and claude leaks it
-   even from a directory outside the repo, whenever a request carries no system prompt.**
+6. **Both CLIs leak whatever project `cliWorkdir` sits inside into chat completions — and
+   claude leaks it even from a directory outside any project, whenever a request carries no
+   system prompt.** (`cliWorkdir` defaults to `~/.cli-wrapper/workspace`, outside every
+   project checkout including this one, specifically to avoid this — see `types/config.ts`'s
+   `CLI_WRAPPER_HOME_DIR`. This gotcha reproduces if an operator points it at a project
+   directory instead, this repo included.)
    Verified live: a plain chat request with an empty system prompt got answers back citing
    this repo's actual AGENTS.md content and a real `git log` commit hash — not a
    hallucination, and not fixed by `--tools ""` or `--setting-sources ""`, which only gate

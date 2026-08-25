@@ -89,9 +89,13 @@ Everything below lives in `config.json` and is editable live from `http://localh
 - **API key** — the bearer token required on `/v1/*`. Leave it blank on the settings page
   to disable auth on `/v1/*` entirely (an explicit, visible opt-out — the server never
   starts with a blank key on its own; see the callout below about `/settings` itself).
-- **API port**, **CLI timeout**, **CLI working directory**.
+- **API port**, **CLI timeout**, **CLI working directory** (defaults to
+  `~/.cli-wrapper/workspace` — outside any project checkout, deliberately, so the CLIs don't
+  auto-discover and leak a project's own `CLAUDE.md`/`AGENTS.md` into chat completions).
 - **Activity log**: whether full prompt/response text is captured, and an optional file
-  path to persist the last 200 entries to disk (see "Recent activity" below).
+  path to persist the last 200 entries to disk (see "Recent activity" below) — off
+  (in-memory only) by default; a relative path here resolves against `~/.cli-wrapper/`, not
+  wherever `cli-wrapper` happens to be run from.
 - **Codex warm pool** (`codexUseWarmPool`, off by default) and **pool size**
   (`codexPoolSize`, default `2`) — see "Codex warm pool (experimental)" below.
 
@@ -233,10 +237,11 @@ cli-wrapper
 ```
 
 That installs a `cli-wrapper` command (from this package's `bin` entry) onto `PATH`. It
-creates `config.json`/`.cli-wrapper-workspace/`/log files relative to wherever you run it
-from — same as running from a source checkout, just without needing `git clone` + a full
-dev toolchain on the target machine. It seeds `config.json` and generates a fresh API key
-on first run, same as local `npm run dev` — see "Configuration" above; no `.env` needed
+creates `config.json` relative to wherever you run it from (same as running from a source
+checkout, just without needing `git clone` + a full dev toolchain on the target machine),
+and the CLI working directory / activity log file (if enabled) under `~/.cli-wrapper/`
+regardless of where you run it from — see "Configuration" above. It seeds `config.json` and
+generates a fresh API key on first run, same as local `npm run dev`; no `.env` needed
 unless you want to override `CONFIG_PATH`, `PORT`, or `SETTINGS_PORT`. `npm install -g` also resolves and
 installs this package's own dependencies (`express`, `dotenv`) from the npm registry, so
 the target machine needs npm registry access (or an internal mirror/private registry) at

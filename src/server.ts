@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { loadEnv } from "./env.js";
 import { initConfig, resolveConfigExamplePath, getSettings } from "./config.js";
+import { CLI_WRAPPER_HOME_DIR } from "./types/config.js";
 import { initLogPersistence } from "./logs.js";
 import { shutdownClaudePool } from "./process/claudePool.js";
 import { shutdownCodexAppServerPool } from "./process/codexAppServer.js";
@@ -12,10 +13,18 @@ const env = loadEnv();
 initConfig(env.configPath, resolveConfigExamplePath());
 const settings = getSettings();
 
+// Always ensure this exists, independent of cliWorkdir's actual value below —
+// it's the fixed anchor a relative logFilePath resolves against (see
+// types/config.ts's CLI_WRAPPER_HOME_DIR doc comment).
+fs.mkdirSync(CLI_WRAPPER_HOME_DIR, { recursive: true });
+
 const cliWorkdir = path.resolve(process.cwd(), settings.cliWorkdir);
 fs.mkdirSync(cliWorkdir, { recursive: true });
 
-const logFilePath = settings.logFilePath ? path.resolve(process.cwd(), settings.logFilePath) : undefined;
+// Resolved against CLI_WRAPPER_HOME_DIR, not process.cwd() — unlike
+// cliWorkdir above — so a relative override lands next to the default
+// workspace dir regardless of where `cli-wrapper` is invoked from.
+const logFilePath = settings.logFilePath ? path.resolve(CLI_WRAPPER_HOME_DIR, settings.logFilePath) : undefined;
 initLogPersistence(logFilePath);
 
 const publicDir = path.resolve(import.meta.dirname, "..", "public");

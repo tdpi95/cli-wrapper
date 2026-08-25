@@ -1,3 +1,19 @@
+import os from "node:os";
+import path from "node:path";
+
+/**
+ * Base dotfolder this wrapper writes non-config runtime state into —
+ * currently just the default cliWorkdir below and the resolution base for a
+ * relative logFilePath (server.ts). Deliberately under the user's home
+ * directory rather than process.cwd(): running `cli-wrapper` after a global
+ * install shouldn't scatter a workspace dir wherever it happens to be
+ * invoked from, and (per AGENTS.md gotcha #6) defaulting outside any project
+ * checkout avoids that project's CLAUDE.md/AGENTS.md leaking into chat
+ * completions via each CLI's own auto-discovery. Not configurable itself —
+ * same bootstrap-ordering reasoning as CONFIG_PATH/SETTINGS_PORT in env.ts.
+ */
+export const CLI_WRAPPER_HOME_DIR = path.join(os.homedir(), ".cli-wrapper");
+
 export type ProviderName = "claude" | "codex";
 
 /**
@@ -83,11 +99,27 @@ export interface WrapperSettings {
   apiPort: number;
   /** Hard per-request subprocess timeout, in ms. */
   cliTimeoutMs: number;
-  /** Working directory passed to the CLIs (resolved relative to process.cwd() if not absolute). */
+  /**
+   * Working directory passed to the CLIs (resolved relative to process.cwd()
+   * if not absolute — DEFAULT_SETTINGS.cliWorkdir below is already absolute,
+   * so this only matters for an operator-supplied relative override).
+   * Defaults outside any project checkout on purpose — see AGENTS.md gotcha
+   * #6: a cliWorkdir sitting inside a project (this repo included, if it
+   * were still the default) leaks that project's CLAUDE.md/AGENTS.md into
+   * chat completions via each CLI's own auto-discovery.
+   */
   cliWorkdir: string;
   /** Whether the activity log stores full prompt/response text vs. metadata only. */
   logCaptureContent: boolean;
-  /** Path to persist the activity log to, or null to keep it in-memory only. */
+  /**
+   * Path to persist the activity log to, or null to keep it in-memory only
+   * (the default — see AGENTS.md's "logs.ts's event log is intentionally
+   * minimal" section on why this stays opt-in). A relative path here is
+   * resolved against CLI_WRAPPER_HOME_DIR (this file, used in server.ts),
+   * not process.cwd() — unlike cliWorkdir above — so it lands next to the
+   * default workspace dir regardless of where `cli-wrapper` happens to be
+   * invoked from.
+   */
   logFilePath: string | null;
   /**
    * When true, the spawned `codex` subprocess gets NO_PROXY/no_proxy widened
@@ -152,7 +184,7 @@ export const DEFAULT_SETTINGS: WrapperSettings = {
   apiKey: "",
   apiPort: 8869,
   cliTimeoutMs: 300_000,
-  cliWorkdir: "./.cli-wrapper-workspace",
+  cliWorkdir: path.join(CLI_WRAPPER_HOME_DIR, "workspace"),
   logCaptureContent: true,
   logFilePath: null,
   codexBypassProxyForOpenAI: false,
