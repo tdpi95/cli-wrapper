@@ -42,16 +42,26 @@ src/
   providers/
     types.ts         CliProvider interface shared by both backends
     claude.ts        thin adapter — delegates straight to process/claudePool.ts
-    codex.ts         spawns `codex exec` fresh per request, parses its --json JSONL output
+    codex.ts         default: spawns `codex exec` fresh per request, parses its --json JSONL
+                     output; delegates to process/codexAppServer.ts instead when
+                     WrapperSettings.codexUseWarmPool is on (opt-in, off by default)
     index.ts         getProvider(name) factory
   process/
     run.ts           spawnManaged(): one-shot subprocess timeout/kill/abort-on-disconnect
-                     (still what codex.ts uses); killWithGrace() is shared with claudePool.ts
+                     (still what codex.ts's default exec path uses); killWithGrace() is
+                     shared with claudePool.ts and codexAppServer.ts
     claudePool.ts    warm claude process pool — keeps `claude -p --input-format
                      stream-json` processes alive across requests, sends "/clear" before
                      every turn, retires each after a random 20-30 uses — see its top-of-
                      file comment for the full design and the "Warm claude process pool"
                      section below
+    codexAppServer.ts warm `codex app-server` daemon pool for codex — EXPERIMENTAL, opt-in
+                     via codexUseWarmPool (default false); see its top-of-file comment and
+                     the "Warm codex app-server pool" section below
+    codexProxyBypass.ts codexBypassProxyForOpenAI's NO_PROXY-widening logic, shared by
+                     codex.ts's exec path and codexAppServer.ts's daemon spawn
+    asyncEventQueue.ts small callback-to-async-generator bridge shared by claudePool.ts's
+                     and codexAppServer.ts's streaming paths
   routes/
     chat.ts          POST /v1/chat/completions (streaming + non-streaming)
     models.ts        GET /v1/models
@@ -92,17 +102,26 @@ given the Node.js-is-already-required assumption above.
   prompt content (quotes, backticks, `$()`, newlines) safe to pass straight through — don't
   reintroduce a shell anywhere in this path.
 - **All "forcibly kill a child process" logic is `process/run.ts`'s `killWithGrace()`,
-  once.** `spawnManaged()` (one-shot processes — codex.ts, and anything else you add) and
-  `process/claudePool.ts` (warm claude workers) both call it rather than each rolling their
-  own SIGTERM/SIGKILL timer. If you add a third provider that's one-shot like codex, route
-  it through `spawnManaged()` directly rather than calling `child_process.spawn` yourself.
-- **`config.ts` reads `config.json` fresh on every call.** No cache, no `fs.watch`. This is
-  intentional — the file is tiny and read once per HTTP request, and "always read fresh"
-  is simpler to reason about than cache invalidation. Don't add caching without a reason.
-  This now applies to `settings` (apiKey/cliTimeoutMs/cliWorkdir/etc.) as much as `models`:
-  `chat.ts` calls `getSettings()` at the top of every request rather than reading a value
-  captured once at server startup, specifically so edits made on /settings apply to the
-  very next request with no restart.
+  once.** `spawnManaged()` (one-shot processes — codex.ts's default exec path, and anything
+  else you add) and `process/claudePool.ts`/`process/codexAppServer.ts` (warm claude workers
+  and codex daemons, respectively) all call it rather than each rolling their own
+  SIGTERM/SIGKILL timer. If you add a third provider that's one-shot like codex's default
+  path, route it through `spawnManaged()` directly rather than calling `child_process.spawn`
+  yourself.
+- **`config.ts` reads `config.json` fresh on every call, and now backfills missing settings
+  fields with `DEFAULT_SETTINGS` on every read (`loadConfig()`), not just at `initConfig()`'s
+  one-time migration.** No cache, no `fs.watch` — reading fresh is intentional and simpler
+  to reason about than cache invalidation, and the same "always correct, not just at
+  startup" reasoning is why the default-backfill lives in the read path too: a config.json
+  written before a newer settings field existed (e.g. an upgrade that adds one) would
+  otherwise leave that field `undefined` forever, since nothing re-migrates an existing file
+  on its own. Verified live to matter, not hypothetical: `codexPoolSize` missing from an old
+  config fed straight into `Math.max(1, undefined)` (`NaN`), which would have broken
+  `codexAppServer.ts`'s daemon-picking `reduce()` on an empty array. Don't add caching
+  without a reason. This applies to `settings` (apiKey/cliTimeoutMs/cliWorkdir/etc.) as much
+  as `models`: `chat.ts` calls `getSettings()` at the top of every request rather than
+  reading a value captured once at server startup, specifically so edits made on /settings
+  apply to the very next request with no restart.
 - **Auth is applied by URL path prefix in `app.ts`, never inside a router via a bare
   `router.use(authMw)`.** See the gotcha below for why — this one actually broke auth
   during development and is easy to reintroduce by accident when adding a new route group.
@@ -225,6 +244,29 @@ These are documented in detail as comments at their fix sites, but the summary:
    `item.completed`/`type:"error"` JSONL event, as fatal by itself for codex — only "no
    `agent_message` ever arrived" is failure (see `providers/codex.ts`).
 
+   **Fixing the slow start**: root-caused to a corporate HTTP(S) proxy (set via the
+   process's own `HTTPS_PROXY`/`https_proxy`) that rejects codex's WebSocket upgrade to
+   `wss://chatgpt.com/backend-api/codex/responses` with `405 Method Not Allowed`. codex
+   retries that handshake 5 times with backoff before falling back to plain HTTPS, and pays
+   that retry cost on *every single call*, not just the first. Fix:
+   `WrapperSettings.codexBypassProxyForOpenAI` (settings page checkbox, default `false`,
+   opt-in) widens `NO_PROXY`/`no_proxy` — merged onto whatever the operator's environment
+   already has there, both casings — to also cover `chatgpt.com`/`.chatgpt.com`/
+   `openai.com`/`.openai.com`, scoped to just the spawned `codex` subprocess's own env
+   (`process/run.ts`'s `spawnManaged` `env` option; never the wrapper server's own process
+   env, and no effect on the claude provider) — see `providers/codex.ts`'s
+   `proxyBypassEnv()`. Read fresh per call like every other setting, so flipping it on
+   `/settings` takes effect on the very next request with no restart.
+   Verified live with a real corporate proxy in play (`HTTPS_PROXY` pointed at an internal
+   proxy that mishandles this specific upgrade), 4 trials each way, driving the actual
+   `codexProvider.runNonStreaming` code path directly (not just the raw `codex` CLI):
+   `false` → 21.06s / 18.68s / 20.31s / 22.73s, websocket 405 errors on every single run;
+   `true` → 6.80s / 8.95s / 6.04s / 6.82s, zero websocket errors — a clean, non-overlapping
+   ~3x speedup, not a fluke. Default stays `false`, not silently on: it only helps when (a)
+   a proxy is actually in play and mishandling this upgrade, and (b) the host's network
+   allows direct, non-proxied egress to those two domains at all — on a network where only
+   the proxy has any route out, forcing a bypass would turn "slow" into "broken" instead.
+
 6. **Both CLIs leak this very repo's own context into chat completions if `cliWorkdir`
    sits inside it (as the default `./.cli-wrapper-workspace` does) — and claude leaks it
    even from a directory outside the repo, whenever a request carries no system prompt.**
@@ -269,11 +311,16 @@ These are documented in detail as comments at their fix sites, but the summary:
 
 ## Is a new CLI process spawned per request?
 
-**codex: yes, always.** Every `POST /v1/chat/completions` routed to a codex model flattens
-the full message history into one prompt (`transcript.ts`) and spawns a fresh `codex exec
---ephemeral`. Zero session-state bookkeeping, no risk of leaking/colliding sessions across
-concurrent requests, but pays a full CLI-boot cost (plus the ~15–20s websocket-fallback
-delay from gotcha #5) every single call.
+**codex: yes, by default — no, when `codexUseWarmPool` is on.** Every `POST
+/v1/chat/completions` routed to a codex model flattens the full message history into one
+prompt (`transcript.ts`). By default that spawns a fresh `codex exec --ephemeral` per
+request (`providers/codex.ts`'s `runExecNonStreaming`/`runExecStreaming`) — zero
+session-state bookkeeping, no risk of leaking/colliding sessions across concurrent requests,
+but pays a full CLI-boot cost (plus the ~15–20s websocket-fallback delay from gotcha #5,
+before `codexBypassProxyForOpenAI`) every single call. `WrapperSettings.codexUseWarmPool`
+(default **false**, EXPERIMENTAL) routes requests through `process/codexAppServer.ts`'s warm
+`codex app-server` daemon pool instead — see "Warm codex app-server pool" below for the full
+design and why it's opt-in rather than a full replacement the way claude's pool is.
 
 **claude: no, not anymore — see "Warm claude process pool" below.** `providers/claude.ts`
 now delegates to `process/claudePool.ts`, which keeps `claude -p --input-format
@@ -355,10 +402,122 @@ Design constraints worth knowing before touching this file:
   `extraFlags`, `reasoningEffort`, `enableWebSearch`, `busy`, `usesRemaining`) — the last
   four parsed back out of `poolKeyFor`'s own JSON encoding of `worker.key` rather than
   duplicating those fields onto `Worker` itself. `busy` is just `worker.currentTurn !==
-  null`. codex has nothing to report here (no persistent pool at all — see above); the
-  settings page UI says so directly rather than showing an empty/misleading table with no
-  explanation. Verified live: the panel showed `busyWorkers: 1` while a real turn was
-  in-flight and flipped to idle with `usesRemaining` decremented the moment it finished.
+  null`. By default codex has nothing to report here (no persistent pool unless
+  `codexUseWarmPool` is on — see "Warm codex app-server pool" below for its own, differently
+  shaped status panel); the settings page UI says so directly rather than showing an
+  empty/misleading table with no explanation. Verified live: the panel showed `busyWorkers:
+  1` while a real turn was in-flight and flipped to idle with `usesRemaining` decremented the
+  moment it finished.
+
+## Warm codex app-server pool (`process/codexAppServer.ts`) — EXPERIMENTAL, opt-in
+
+`WrapperSettings.codexUseWarmPool` (default **false**) routes codex requests through a warm
+`codex app-server` daemon pool instead of `providers/codex.ts`'s default one-shot `codex exec
+--ephemeral` per request. Unlike claude, `codex exec` has no stdin-keep-alive mode to build
+on (no `--input-format` flag exists on `exec`), so `process/claudePool.ts`'s approach doesn't
+port directly — `codex app-server` is a different thing entirely: a JSON-RPC 2.0 daemon
+(newline-delimited JSON over stdio) where one long-lived process can run any number of
+independent, isolated "threads" without spawning a new OS process per request.
+
+**Why this is opt-in rather than a full replacement the way claude's pool is** (see the
+rollout discussion this shipped from): `codex app-server`'s own upstream README
+(`codex-rs/app-server/README.md`) states it's *"the interface Codex uses to power rich
+interfaces such as the Codex VS Code extension"* — so the core `thread/*`/`turn/*` methods
+this file uses are real production surface, not a throwaway experiment (only newer
+sub-features — websocket transport, realtime, paginated history, multi-agent — are
+individually flagged experimental in that doc). But nothing in it promises method
+names/shapes stay stable across codex releases, there's no official client library, and the
+top-level `codex app-server` subcommand itself is still labeled `[experimental]` in the
+CLI's own `--help`. Defaulting off means a codex CLI upgrade that changes this protocol
+can't silently break an existing deployment; an operator opts in after confirming it works
+against their installed codex version.
+
+**Verified live** (see the conversation this shipped from for the full investigation,
+including pulling the protocol's JSON schema via `codex app-server generate-json-schema`):
+- A cold daemon's first turn: ~7s (includes daemon spawn + `initialize` handshake). A second
+  turn on the same warm daemon: ~4-6s — beats a fresh `codex exec` process (~6-9s, even with
+  `codexBypassProxyForOpenAI` already on) because the daemon's own CLI-boot/auth/model-catalog
+  cost is paid once at spawn, not per request.
+- **Real concurrency, not just reuse**: 4 fully concurrent turns issued against one daemon
+  completed in ~5s total wall-clock (not ~20s additive), each in its own isolated thread with
+  no observed state bleed between them. Reproduced through the actual HTTP API too: 4
+  concurrent `POST /v1/chat/completions` requests all returned 200 in ~7s total.
+- Reasoning effort/summary (`turn/start`'s `effort`/`summary` fields) and web search
+  (`thread/start`'s `config: {tools: {web_search: true}}`, the same raw config.toml-style
+  override `-c tools.web_search=true` uses) both work identically to the exec path — confirmed
+  live with a real web-search turn producing `item/started`/`item/completed` events of
+  `type: "webSearch"` and a cited final answer.
+- Streaming is **strictly better** than the exec path here: `item/agentMessage/delta` and
+  `item/reasoning/summaryTextDelta` notifications carry real token-level deltas, not
+  exec's "whole message as one chunk" (codex's JSONL `item.completed` events have no
+  finer granularity — see providers/codex.ts's comment on this).
+- Graceful shutdown verified: a real `SIGTERM` to the server with two warm daemons and
+  in-flight turns killed both `codex app-server` processes cleanly, none left orphaned.
+
+**Design constraints and gotchas specific to this file:**
+- **Nothing here is spawn-time-only, unlike claude.** Model, cwd, sandbox, reasoning
+  effort/summary, and web-search are all turn/thread-time JSON-RPC parameters, not CLI
+  flags baked in at process spawn. So daemons are **not** keyed by
+  `(cliModel, extraFlags, reasoningEffort, enableWebSearch)` the way claude's pool is — any
+  daemon can serve any request. The pool is just `codexPoolSize` interchangeable daemons,
+  picked by least-in-flight-turns.
+- **Every request gets its own ephemeral thread and exactly one turn**
+  (`thread/start` with `ephemeral: true`, then one `turn/start`) — this is what gives the
+  same statelessness guarantee as a fresh `codex exec` process, without paying to boot one.
+  Ephemeral threads are **never explicitly deleted**: verified live that calling
+  `thread/delete` on one fails (`"thread is not persisted and cannot be deleted"`) — they're
+  in-memory only and the daemon cleans them up on its own once nothing references them.
+- **The protocol requires a handshake** (documented in the upstream README, easy to miss
+  from the schema alone): a single `initialize` request per connection, awaited, then an
+  `initialized` notification (no id) before any other call. Skipping the notification
+  happened to still work against the codex version this was built against, but it's a real
+  spec requirement — sent regardless (`spawnDaemon`'s `daemon.ready`).
+- **No hard per-daemon concurrency cap.** Verified live that several concurrent turns on one
+  daemon work fine (isolated ephemeral threads, no shared mutable state to race on).
+  `codexPoolSize` bounds the number of OS processes (and the blast radius if one dies — see
+  below), not concurrency. The upstream protocol documents a `-32001` JSON-RPC error for
+  "request ingress saturated" if a daemon really is overloaded; `startEphemeralTurn` retries
+  that on a fresh daemon (`MAX_OVERLOAD_RETRIES`, with a short backoff) rather than failing
+  the request outright.
+- **Shared blast radius, the real trade-off of multiplexing requests onto one process.** A
+  daemon that exits unexpectedly (crash, kill, EOF) takes down every turn currently running
+  on it, not just one request — `codexPoolSize > 1` bounds how much traffic that can hit at
+  once. A dead daemon's slot is simply respawned lazily the next time `acquireDaemon()` needs
+  one; there's no proactive restart timer.
+- **A timed-out or aborted turn sends `turn/interrupt` and fails immediately** — it does
+  **not** wait for the interrupt to confirm before rejecting, same "never hang past the
+  request's own timeout" guarantee every other path in this codebase has. Unlike claude's
+  pool, the daemon itself is **never killed** for one turn's timeout, since it's shared
+  infrastructure serving other concurrent requests — only that one ephemeral thread is
+  affected. Not independently verified live that `turn/interrupt` actually stops
+  provider-side model/search work rather than just marking the turn interrupted after the
+  fact — a known gap, not a confirmed guarantee.
+- **No idle-eviction or per-daemon use-count retirement**, unlike claudePool.ts's
+  `IDLE_TIMEOUT_MS`/random-20-30-use retirement. Daemons don't accumulate client-visible
+  conversation state the way a claude worker without `/clear` would (every thread is
+  isolated and ephemeral, so there's nothing to clear — see the "how to clear context" note
+  in the conversation this shipped from), so there's no "went stale" correctness condition
+  to guard against, only ordinary long-lived-process memory/fd footprint (~150-180MB RSS per
+  idle daemon, measured live) held for no ongoing benefit once traffic drops. **Explicitly
+  handed off, not fixed here** — see "Idle eviction for codex app-server daemons" under Open
+  optimizations below before picking this up.
+- **Toggling `codexUseWarmPool` off does not stop already-running daemons.** They sit idle
+  (no idle-eviction — see above) until the server restarts. Not currently considered a
+  problem worth fixing given the pool is opt-in and low-traffic by construction, but worth
+  knowing if you're chasing down an unexpectedly-alive `codex app-server` process after
+  flipping the setting off.
+- **Pool status**: `getCodexPoolStatus()`, exposed at `GET /api/settings/codex-pool-status`
+  (no auth, same as every other `/api/settings/*` route). Reports `enabled`/`poolSize`/
+  `totalDaemons`/`totalInFlightTurns` plus one row per live daemon (`pid`, `inFlightTurns`,
+  `turnsServed`) — deliberately a different, simpler shape than claude's `PoolWorkerStatus`
+  since there's no per-worker `cliModel`/`reasoningEffort`/etc. to report (see "nothing is
+  spawn-time-only" above — those are per-request, not per-daemon).
+- `process/codexProxyBypass.ts` holds the `codexBypassProxyForOpenAI` env-widening logic,
+  factored out of `providers/codex.ts` so both the legacy exec path and this daemon pool's
+  spawn can share it without a `process/*` → `providers/*` dependency (this codebase's
+  layering only ever goes the other way). `process/asyncEventQueue.ts` is a similar small
+  extraction — the callback-to-async-generator bridge both this file's and claudePool.ts's
+  streaming paths need, previously duplicated as a private class inside claudePool.ts.
 
 ## Reasoning effort control and content (`ModelMapping.reasoningEffort`/`allowReasoningEffortOverride`)
 
@@ -527,8 +686,9 @@ that can ever become available on a claude mapping, regardless of `enableWebSear
 
 ## Open optimizations for future development
 
-Roughly ordered by likely value; the warm process pool below is the only one of these
-shipped so far (and only for claude, not codex — see its own bullet).
+Roughly ordered by likely value; the warm process pool is the main one of these shipped so
+far — fully for claude, and experimentally (opt-in, off by default) for codex — see the
+bullet below.
 
 ### Performance / cost
 - **Session reuse for multi-turn conversations.** Keep a server-side map of some
@@ -538,25 +698,41 @@ shipped so far (and only for claude, not codex — see its own bullet).
   re-flattening and re-sending the whole history every time. Would recover cross-turn
   prompt caching and cut the growing-transcript cost, at the price of real session
   lifecycle management (expiry, cleanup, concurrent-use-of-one-session handling).
-- **Warm process pool — done for claude, not for codex.** See "Warm claude process pool"
-  above. `codex exec` has no equivalent stdin-keep-alive mode to build on (confirmed live —
-  no `--input-format` flag exists on `exec`), so it still pays full CLI-boot cost, plus its
-  ~15–20s websocket-fallback delay, on every single call. The only programmatic route to
-  something similar for codex is its `[EXPERIMENTAL]` `app-server`/`exec-server` daemon — a
-  bespoke, undocumented JSON-RPC protocol (150+ methods; there's a `generate-ts`/
-  `generate-json-schema` subcommand because no client library exists yet), with no
-  confirmed "reset this thread in place" method (only `thread/start`, which creates a new
-  thread, not an in-place clear). A much bigger, riskier lift than the claude change — worth
-  a separately-scoped investigation if warm codex processes ever become a priority, not an
-  extension of claudePool.ts's approach.
-- **Per-provider concurrency limits / queuing — done for claude, not for codex.**
-  `claudePool.ts` caps total warm workers at `MAX_TOTAL_WORKERS` and queues requests beyond
-  that (see "Warm claude process pool" above). `codex exec` is still a fresh one-shot
+- **Warm process pool — done for claude (default), and for codex behind an opt-in flag.**
+  See "Warm claude process pool" and "Warm codex app-server pool" above. `codex exec` itself
+  has no equivalent stdin-keep-alive mode (confirmed live — no `--input-format` flag exists
+  on `exec`), so `WrapperSettings.codexUseWarmPool` uses a different mechanism entirely
+  (`codex app-server`'s JSON-RPC daemon) rather than an extension of claudePool.ts's
+  approach — verified working, meaningfully faster, and handles real concurrency on one
+  daemon, but stays opt-in/default-off (unlike claude's pool, which fully replaced the old
+  path) because that protocol has no documented backwards-compatibility guarantee across
+  codex versions. Remaining gap: no idle-eviction or long-uptime resource bounding on codex
+  daemons yet (claude's pool has both) — see that section's gotchas list, and the next bullet
+  for the handoff.
+- **Idle eviction for codex app-server daemons.** Explicitly deferred, not done.
+  `process/codexAppServer.ts` has no equivalent to claudePool.ts's `IDLE_TIMEOUT_MS` (kill an
+  idle worker after 30 min of not being reused) or its random 20-30-use retirement — once
+  spawned, a daemon lives until the server restarts, whether or not `codexUseWarmPool` is
+  still even on (turning it off doesn't stop already-running daemons either). Each idle
+  daemon holds ~150-180MB RSS (measured live) for no ongoing benefit once traffic drops.
+  Fixing it: `Daemon` already tracks `inFlightTurns`, so the shape would mirror claude's
+  `evictIdleWorker` — start a timer when a daemon's `inFlightTurns` reaches 0, clear it on
+  reacquire, retire (close stdin, `killWithGrace` fallback) on fire; `acquireDaemon()`
+  already respawns lazily on demand, so nothing else needs to change. Low complexity, just
+  not done yet because the pool itself is opt-in/low-traffic by construction and this hasn't
+  bitten anyone in practice — pick it up whenever codex daemon memory footprint actually
+  becomes a real operational concern for whoever's running this.
+- **Per-provider concurrency limits / queuing — done for claude via a hard cap+queue; codex
+  takes a different, softer approach when its warm pool is on, and has none at all when it's
+  off (the default).** `claudePool.ts` caps total warm workers at `MAX_TOTAL_WORKERS` and
+  queues requests beyond that. `codexAppServer.ts` doesn't cap concurrency the same way —
+  verified live that one daemon handles several simultaneous turns fine — instead
+  `codexPoolSize` bounds OS process count/blast-radius, and an upstream-documented `-32001`
+  "ingress saturated" error triggers a bounded retry on a fresh daemon rather than a hard
+  reject. With the codex pool off (still the default), `codex exec` remains a fresh one-shot
   `spawnManaged` process per request with no cap at all — a burst of codex-routed requests
   spawns a matching burst of `codex` processes. Fine for a personal/internal wrapper, not
-  fine if this is ever exposed more broadly. Bounding it would mean giving `spawnManaged`
-  (or a wrapper around it) the same kind of global-cap-plus-queue `claudePool.ts` already
-  has for claude.
+  fine if this is ever exposed more broadly with the pool left off.
 
 ### Correctness / robustness
 - **Concurrent `config.json` writes aren't mutex'd.** The atomic tmp-file+rename in

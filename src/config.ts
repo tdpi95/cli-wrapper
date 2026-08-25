@@ -123,14 +123,23 @@ function announceApiKey(apiKey: string, source: "legacy-env" | "generated" | "se
   console.log("");
 }
 
-/** Reads config.json fresh from disk every call — cheap, small file, keeps edits live without restart. */
+/**
+ * Reads config.json fresh from disk every call — cheap, small file, keeps
+ * edits live without restart. `settings` is backfilled with DEFAULT_SETTINGS
+ * on every read (not just at initConfig()'s one-time migration) so a config
+ * written before a newer settings field existed doesn't leave that field
+ * `undefined` forever — verified live to matter: `codexPoolSize` missing
+ * from an old config.json fed straight into `Math.max(1, undefined)` (NaN)
+ * and would have crashed codexAppServer.ts's daemon-picking `reduce()` on an
+ * empty array. Only fills gaps; any value already on disk is left verbatim.
+ */
 export function loadConfig(): WrapperConfig {
   const raw = fs.readFileSync(configPath, "utf8");
   const parsed = JSON.parse(raw) as WrapperConfig;
   if (!parsed || !Array.isArray(parsed.models) || !parsed.settings) {
     throw new Error(`Malformed config at ${configPath}: expected { version, settings, models: [] }`);
   }
-  return parsed;
+  return { ...parsed, settings: { ...DEFAULT_SETTINGS, ...parsed.settings } };
 }
 
 /** Atomic write: write to a temp file then rename over the target. */
@@ -162,6 +171,15 @@ function validateSettings(s: WrapperSettings): void {
   }
   if (s.logFilePath !== null && (typeof s.logFilePath !== "string" || s.logFilePath.trim() === "")) {
     throw new ValidationError("`logFilePath` must be a non-empty string or null");
+  }
+  if (typeof s.codexBypassProxyForOpenAI !== "boolean") {
+    throw new ValidationError("`codexBypassProxyForOpenAI` must be a boolean");
+  }
+  if (typeof s.codexUseWarmPool !== "boolean") {
+    throw new ValidationError("`codexUseWarmPool` must be a boolean");
+  }
+  if (!Number.isInteger(s.codexPoolSize) || s.codexPoolSize < 1) {
+    throw new ValidationError("`codexPoolSize` must be an integer >= 1");
   }
 }
 

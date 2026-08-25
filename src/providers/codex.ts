@@ -1,5 +1,8 @@
 import { spawnManaged, timeoutErrorFor } from "../process/run.js";
+import { codexProxyBypassEnv } from "../process/codexProxyBypass.js";
+import { runAppServerNonStreaming, runAppServerStreaming } from "../process/codexAppServer.js";
 import { CliExecutionError } from "../errors.js";
+import { getSettings } from "../config.js";
 import type { CliProvider, RunOptions, RunResult, StreamChunk, Usage } from "./types.js";
 
 const CMD = "codex";
@@ -79,7 +82,12 @@ async function* consume(opts: RunOptions): AsyncIterable<
   | { type: "usage"; usage: Usage }
   | { type: "warning"; message: string }
 > {
-  const managed = spawnManaged(CMD, args(opts), { cwd: opts.workdir, timeoutMs: opts.timeoutMs, signal: opts.signal });
+  const managed = spawnManaged(CMD, args(opts), {
+    cwd: opts.workdir,
+    timeoutMs: opts.timeoutMs,
+    signal: opts.signal,
+    env: codexProxyBypassEnv(),
+  });
 
   for await (const line of managed.stdout) {
     if (!line.trim()) continue;
@@ -119,71 +127,90 @@ async function* consume(opts: RunOptions): AsyncIterable<
   }
 }
 
-export const codexProvider: CliProvider = {
-  async runNonStreaming(opts: RunOptions): Promise<RunResult> {
-    let text: string | undefined;
-    const reasoningParts: string[] = [];
-    let usage: Usage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
-    let lastWarning: string | undefined;
-    let exitError: unknown;
+/**
+ * Legacy path: spawns a fresh one-shot `codex exec` per request (this has
+ * been the only codex behavior until WrapperSettings.codexUseWarmPool was
+ * added — see process/codexAppServer.ts for the alternative and AGENTS.md's
+ * "Warm codex app-server pool" section for why it's opt-in, not default).
+ */
+async function runExecNonStreaming(opts: RunOptions): Promise<RunResult> {
+  let text: string | undefined;
+  const reasoningParts: string[] = [];
+  let usage: Usage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
+  let lastWarning: string | undefined;
+  let exitError: unknown;
 
-    try {
-      for await (const evt of consume(opts)) {
-        if (evt.type === "message") text = evt.text;
-        else if (evt.type === "reasoning") reasoningParts.push(evt.text);
-        else if (evt.type === "usage") usage = evt.usage;
-        else if (evt.type === "warning") lastWarning = evt.message;
-      }
-    } catch (err) {
-      exitError = err;
+  try {
+    for await (const evt of consume(opts)) {
+      if (evt.type === "message") text = evt.text;
+      else if (evt.type === "reasoning") reasoningParts.push(evt.text);
+      else if (evt.type === "usage") usage = evt.usage;
+      else if (evt.type === "warning") lastWarning = evt.message;
     }
+  } catch (err) {
+    exitError = err;
+  }
 
-    if (text !== undefined) {
-      return { text, reasoningText: reasoningParts.length ? reasoningParts.join("\n\n") : undefined, usage, stopReason: "stop" };
-    }
-    if (exitError) throw exitError;
-    throw new CliExecutionError(lastWarning ?? "codex produced no output");
-  },
+  if (text !== undefined) {
+    return { text, reasoningText: reasoningParts.length ? reasoningParts.join("\n\n") : undefined, usage, stopReason: "stop" };
+  }
+  if (exitError) throw exitError;
+  throw new CliExecutionError(lastWarning ?? "codex produced no output");
+}
 
-  async *runStreaming(opts: RunOptions): AsyncIterable<StreamChunk> {
-    let sawMessage = false;
-    let usage: Usage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
-    let lastWarning: string | undefined;
-    let roleSent = false;
+async function* runExecStreaming(opts: RunOptions): AsyncIterable<StreamChunk> {
+  let sawMessage = false;
+  let usage: Usage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
+  let lastWarning: string | undefined;
+  let roleSent = false;
 
-    try {
-      for await (const evt of consume(opts)) {
-        if (evt.type === "message") {
-          if (!roleSent) {
-            roleSent = true;
-            yield { kind: "role" };
-          }
-          sawMessage = true;
-          // No token-level deltas from codex — emit the whole message as one chunk.
-          yield { kind: "delta", text: evt.text };
-        } else if (evt.type === "reasoning") {
-          if (!evt.text) continue; // defensive: skip an empty summary chunk, same as claudePool.ts
-          if (!roleSent) {
-            roleSent = true;
-            yield { kind: "role" };
-          }
-          // Same "whole chunk, no token deltas" situation as agent_message.
-          yield { kind: "reasoning", text: evt.text };
-        } else if (evt.type === "usage") {
-          usage = evt.usage;
-        } else if (evt.type === "warning") {
-          lastWarning = evt.message;
+  try {
+    for await (const evt of consume(opts)) {
+      if (evt.type === "message") {
+        if (!roleSent) {
+          roleSent = true;
+          yield { kind: "role" };
         }
+        sawMessage = true;
+        // No token-level deltas from codex — emit the whole message as one chunk.
+        yield { kind: "delta", text: evt.text };
+      } else if (evt.type === "reasoning") {
+        if (!evt.text) continue; // defensive: skip an empty summary chunk, same as claudePool.ts
+        if (!roleSent) {
+          roleSent = true;
+          yield { kind: "role" };
+        }
+        // Same "whole chunk, no token deltas" situation as agent_message.
+        yield { kind: "reasoning", text: evt.text };
+      } else if (evt.type === "usage") {
+        usage = evt.usage;
+      } else if (evt.type === "warning") {
+        lastWarning = evt.message;
       }
-    } catch (err) {
-      yield { kind: "error", message: err instanceof Error ? err.message : String(err) };
-      return;
     }
+  } catch (err) {
+    yield { kind: "error", message: err instanceof Error ? err.message : String(err) };
+    return;
+  }
 
-    if (sawMessage) {
-      yield { kind: "done", usage, stopReason: "stop" };
-    } else {
-      yield { kind: "error", message: lastWarning ?? "codex produced no output" };
-    }
+  if (sawMessage) {
+    yield { kind: "done", usage, stopReason: "stop" };
+  } else {
+    yield { kind: "error", message: lastWarning ?? "codex produced no output" };
+  }
+}
+
+// Dispatches between the legacy one-shot `codex exec` path (default) and the
+// warm `codex app-server` daemon pool (WrapperSettings.codexUseWarmPool,
+// opt-in — see process/codexAppServer.ts and AGENTS.md's "Warm codex
+// app-server pool" section). Read fresh per request, same "settings read
+// live" convention as everywhere else, so flipping the toggle on /settings
+// takes effect on the very next request with no restart.
+export const codexProvider: CliProvider = {
+  runNonStreaming(opts: RunOptions): Promise<RunResult> {
+    return getSettings().codexUseWarmPool ? runAppServerNonStreaming(opts) : runExecNonStreaming(opts);
+  },
+  runStreaming(opts: RunOptions): AsyncIterable<StreamChunk> {
+    return getSettings().codexUseWarmPool ? runAppServerStreaming(opts) : runExecStreaming(opts);
   },
 };

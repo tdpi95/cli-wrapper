@@ -5,6 +5,7 @@ import { loadEnv } from "./env.js";
 import { initConfig, resolveConfigExamplePath, getSettings } from "./config.js";
 import { initLogPersistence } from "./logs.js";
 import { shutdownClaudePool } from "./process/claudePool.js";
+import { shutdownCodexAppServerPool } from "./process/codexAppServer.js";
 import { buildApiApp, buildSettingsApp } from "./app.js";
 
 const env = loadEnv();
@@ -40,13 +41,16 @@ console.log(`config: ${env.configPath}`);
 console.log(`cli workdir: ${cliWorkdir}`);
 console.log(`activity log persistence: ${logFilePath ?? "disabled (in-memory only)"}`);
 
-// The claude provider now keeps warm processes running between requests
-// (see process/claudePool.ts) — unlike the old one-shot-per-request design,
-// those can outlive a single HTTP request, so they need an explicit exit
-// hook or a killed/Ctrl-C'd server would leave them orphaned.
+// The claude provider keeps warm processes running between requests (see
+// process/claudePool.ts), and codex optionally does too when
+// codexUseWarmPool is on (see process/codexAppServer.ts) — unlike the old
+// one-shot-per-request design, those can outlive a single HTTP request, so
+// they need an explicit exit hook or a killed/Ctrl-C'd server would leave
+// them orphaned.
 function shutdown(signal: NodeJS.Signals): void {
-  console.log(`${signal} received, shutting down warm claude processes...`);
+  console.log(`${signal} received, shutting down warm claude/codex processes...`);
   shutdownClaudePool();
+  shutdownCodexAppServerPool();
   process.exit(0);
 }
 process.on("SIGTERM", shutdown);
