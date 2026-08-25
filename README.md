@@ -30,7 +30,7 @@ host — no separate API key to provision for the model calls themselves.
 ## Contents
 
 [Prerequisites](#prerequisites) · [Setup](#setup) · [Configuration](#configuration) ·
-[Usage](#usage) · [Shipping to another machine](#shipping-to-another-machine) ·
+[Usage](#usage) · [Install](#install) ·
 [Notes / limitations](#notes--limitations) · [Environment variables](#environment-variables) ·
 [More docs](#more-docs)
 
@@ -205,7 +205,7 @@ back on the next start).
 > (model, provider, status, duration, token counts) with no prompt/response text stored
 > anywhere, on disk or in memory. The settings page shows which modes are active.
 
-## Shipping to another machine
+## Install
 
 The target machine needs Node.js and its own logged-in `claude`/`codex` CLIs (the same
 prerequisites as above) — this doesn't bundle a Node runtime or the CLIs themselves, only
@@ -226,7 +226,7 @@ npm run build   # or just `npm pack`, which runs this via its "prepack" script
 npm pack        # produces cli-wrapper-<version>.tgz
 ```
 
-### Install
+### Install on the target machine
 
 Copy the `.tgz` (downloaded or built) to the target machine (`scp`, a shared drive, an
 internal artifact store, however you move files there) and install it:
@@ -249,8 +249,7 @@ install time — the tarball itself doesn't vendor them.
 
 No Node.js on the target machine at all, or want a single self-contained executable
 instead of an npm-installed command? That needs a different approach (bundling with
-esbuild + Node's Single Executable Application feature or a packager like `@yao-pkg/pkg`) —
-ask if you want that built out; see `AGENTS.md`'s open optimizations for the trade-offs.
+esbuild + Node's Single Executable Application feature or a packager like `@yao-pkg/pkg`).
 
 ## Notes / limitations
 

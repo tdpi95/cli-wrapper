@@ -83,7 +83,7 @@ bin/cli-wrapper.js    uncompiled `bin` entrypoint (shebang + `import "../dist/se
 assumes the target machine already has Node.js (a safe assumption here since
 `claude`/`codex` themselves are npm-distributed CLIs) and npm registry access at install
 time (to resolve `express`/`dotenv` — the tarball doesn't vendor `node_modules`). See
-README's "Shipping to another machine" for the actual commands.
+README's "Install" section for the actual commands.
 
 If a target machine truly has no Node.js and a real standalone native executable is ever
 needed instead: bundle with `esbuild` into a single file first (this app's ESM + `NodeNext`
