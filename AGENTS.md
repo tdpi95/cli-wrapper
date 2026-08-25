@@ -347,6 +347,18 @@ Design constraints worth knowing before touching this file:
   verified live (sent a real SIGTERM to a running server with an active warm worker,
   confirmed the worker was gone, not orphaned). A `SIGKILL`'d server (or a crash) still
   can't run this hook — same caveat any Node process has.
+- **Pool status is visible on the settings page** (`getPoolStatus()`, exposed at `GET
+  /api/settings/pool-status`, no auth like every other `/api/settings/*` route). A
+  point-in-time snapshot of live module state (`allWorkers`/`waiters`) — nothing cached,
+  same convention as `config.ts`. Reports `maxTotalWorkers`/`totalWorkers`/`busyWorkers`/
+  `idleWorkers`/`queuedWaiters` plus one row per live worker (`pid`, `cliModel`,
+  `extraFlags`, `reasoningEffort`, `enableWebSearch`, `busy`, `usesRemaining`) — the last
+  four parsed back out of `poolKeyFor`'s own JSON encoding of `worker.key` rather than
+  duplicating those fields onto `Worker` itself. `busy` is just `worker.currentTurn !==
+  null`. codex has nothing to report here (no persistent pool at all — see above); the
+  settings page UI says so directly rather than showing an empty/misleading table with no
+  explanation. Verified live: the panel showed `busyWorkers: 1` while a real turn was
+  in-flight and flipped to idle with `usesRemaining` decremented the moment it finished.
 
 ## Reasoning effort control and content (`ModelMapping.reasoningEffort`/`allowReasoningEffortOverride`)
 

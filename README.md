@@ -13,7 +13,8 @@ host — no separate API key to provision for the model calls themselves.
   own port, separate from the API, so exposing one doesn't automatically expose the other.
 - **Warm process pool for `claude`** — reuses already-running `claude` processes across
   requests instead of paying a full CLI boot every call, while staying fully stateless from
-  the client's point of view.
+  the client's point of view. Live pool status (busy/idle workers, queued requests) is
+  viewable on the settings page.
 - **Reasoning effort control** — set a default per model mapping, optionally let a request's
   own `reasoning_effort` field override it, and get any reasoning/thinking content back as
   `reasoning_content`.
@@ -149,13 +150,22 @@ ending in `data: [DONE]`.
 
 Open `http://localhost:8868/settings` in a browser to edit server configuration and model
 mappings. Changes take effect immediately on the next API request — no restart needed
-(except **API port**). The same page has a **Recent activity** panel (auto-refreshing every 4s)
-showing the last 200 chat-completion requests — model, provider, streaming, status,
-duration, token usage, and error message where relevant. Each row has a **View** button
-showing the full prompt sent to the CLI and the full response text. Backed by
-`GET`/`DELETE /api/settings/logs`; it's in-memory only by default and resets on server
-restart — set a log file path on the settings page to persist it to disk instead (still
-capped at the last 200 entries, loaded back on the next start).
+(except **API port**).
+
+The same page has a **Claude process pool** panel (auto-refreshing every 3s, `GET
+/api/settings/pool-status`) showing every live warm `claude` process — PID, model,
+reasoning effort, web search, busy/idle, and remaining uses before it retires — plus a
+summary of how many are running against the pool's cap and how many requests, if any, are
+queued waiting for a free one. `codex` has no persistent pool (a fresh process per request,
+so nothing to show), and the panel says so.
+
+It also has a **Recent activity** panel (auto-refreshing every 4s) showing the last 200
+chat-completion requests — model, provider, streaming, status, duration, token usage, and
+error message where relevant. Each row has a **View** button showing the full prompt sent
+to the CLI and the full response text. Backed by `GET`/`DELETE /api/settings/logs`; it's
+in-memory only by default and resets on server restart — set a log file path on the
+settings page to persist it to disk instead (still capped at the last 200 entries, loaded
+back on the next start).
 
 > **This means full conversation content can sit in server memory, and optionally on
 > disk**, visible to anyone who can reach `/settings` (which, again, has no auth of its

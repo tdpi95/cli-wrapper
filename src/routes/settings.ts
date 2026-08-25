@@ -3,6 +3,7 @@ import { Router } from "express";
 import { addMapping, deleteMapping, getSettings, loadConfig, updateMapping, updateSettings } from "../config.js";
 import { toApiError } from "../errors.js";
 import { clearLogEntries, getLogEntries, getLogPersistPath, isLogPersistenceEnabled, setLogPersistPath } from "../logs.js";
+import { getPoolStatus } from "../process/claudePool.js";
 
 // No auth on any route in this file, by design — see the note in app.ts.
 export function settingsRouter(publicDir: string): Router {
@@ -81,6 +82,12 @@ export function settingsRouter(publicDir: string): Router {
   router.delete("/api/settings/logs", (_req, res) => {
     clearLogEntries();
     res.status(204).end();
+  });
+
+  // claude only — codex has no persistent pool to report on (a fresh `codex
+  // exec` is spawned per request; see AGENTS.md's "Warm claude process pool").
+  router.get("/api/settings/pool-status", (_req, res) => {
+    res.json(getPoolStatus());
   });
 
   return router;

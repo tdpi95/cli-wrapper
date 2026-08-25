@@ -388,6 +388,63 @@ export function shutdownClaudePool(): void {
   // everything else in flight; nothing to hand them a worker anyway.
 }
 
+export interface PoolWorkerStatus {
+  pid: number | undefined;
+  cliModel: string;
+  extraFlags: string[];
+  reasoningEffort: string | null;
+  enableWebSearch: boolean;
+  /** True while actively handling a turn; false while sitting idle in the pool. */
+  busy: boolean;
+  /** Remaining uses before this worker retires itself (see MIN/MAX_USES_BEFORE_RETIRE above). */
+  usesRemaining: number;
+}
+
+export interface PoolStatus {
+  maxTotalWorkers: number;
+  totalWorkers: number;
+  busyWorkers: number;
+  idleWorkers: number;
+  /** Requests waiting for a worker because the pool was at MAX_TOTAL_WORKERS with no idle match. */
+  queuedWaiters: number;
+  workers: PoolWorkerStatus[];
+}
+
+/**
+ * A point-in-time snapshot for the settings page — see routes/settings.ts's
+ * `/api/settings/pool-status`. Reads live module state directly (`allWorkers`/
+ * `waiters`), same as everything else in this file; nothing here is cached.
+ * `key` is never stored on `Worker` itself (only used as the idleWorkers/Map
+ * lookup key), so it's parsed back from `poolKeyFor`'s own JSON encoding
+ * rather than duplicating those fields on every worker — see poolKeyFor.
+ */
+export function getPoolStatus(): PoolStatus {
+  const workers: PoolWorkerStatus[] = [];
+  let busyWorkers = 0;
+  for (const worker of allWorkers) {
+    const busy = worker.currentTurn !== null;
+    if (busy) busyWorkers++;
+    const [cliModel, extraFlags, reasoningEffort, enableWebSearch] = JSON.parse(worker.key) as [string, string[], string | null, boolean];
+    workers.push({
+      pid: worker.child.pid,
+      cliModel,
+      extraFlags,
+      reasoningEffort,
+      enableWebSearch,
+      busy,
+      usesRemaining: worker.usesRemaining,
+    });
+  }
+  return {
+    maxTotalWorkers: MAX_TOTAL_WORKERS,
+    totalWorkers: allWorkers.size,
+    busyWorkers,
+    idleWorkers: allWorkers.size - busyWorkers,
+    queuedWaiters: waiters.length,
+    workers,
+  };
+}
+
 function sendUserTurn(worker: Worker, text: string): void {
   try {
     worker.child.stdin.write(JSON.stringify({ type: "user", message: { role: "user", content: [{ type: "text", text }] } }) + "\n");

@@ -560,6 +560,47 @@
 
     <div class="card">
       <div class="card-header">
+        <div>
+          <h2>Claude process pool</h2>
+          <p>
+            Live warm-process pool status.
+            <span id="pool-provider-note"
+              >codex has no persistent pool — it spawns a fresh process per
+              request, so there's nothing to show for it here.</span
+            >
+          </p>
+        </div>
+        <div class="log-controls">
+          <label
+            ><input type="checkbox" id="pool-auto-refresh" checked />
+            Auto-refresh</label
+          >
+          <button type="button" id="pool-refresh-btn">Refresh</button>
+        </div>
+      </div>
+      <p id="pool-status-summary" class="notes"></p>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>PID</th>
+              <th>cliModel</th>
+              <th>reasoning effort</th>
+              <th>web search</th>
+              <th>status</th>
+              <th>uses remaining</th>
+            </tr>
+          </thead>
+          <tbody id="pool-rows"></tbody>
+        </table>
+      </div>
+      <p id="pool-empty" style="display: none">
+        No warm claude processes running right now.
+      </p>
+    </div>
+
+    <div class="card">
+      <div class="card-header">
         <div><h2>Recent activity</h2></div>
         <div class="log-controls">
           <label
@@ -933,6 +974,68 @@
       });
 
       refresh();
+
+      // --- Claude process pool status ---
+
+      const poolRowsEl = document.getElementById("pool-rows");
+      const poolEmptyEl = document.getElementById("pool-empty");
+      const poolSummaryEl = document.getElementById("pool-status-summary");
+      const poolAutoRefreshEl = document.getElementById("pool-auto-refresh");
+      const poolRefreshBtn = document.getElementById("pool-refresh-btn");
+
+      function renderPoolStatus(status) {
+        poolSummaryEl.textContent =
+          `${status.totalWorkers} / ${status.maxTotalWorkers} warm processes running` +
+          ` · ${status.busyWorkers} busy · ${status.idleWorkers} idle` +
+          (status.queuedWaiters
+            ? ` · ${status.queuedWaiters} request(s) queued waiting for a worker`
+            : "");
+        poolRowsEl.innerHTML = "";
+        poolEmptyEl.style.display = status.workers.length ? "none" : "block";
+        for (const w of status.workers) {
+          const tr = document.createElement("tr");
+          tr.innerHTML = `
+      <td class="mono">${escapeHtml(w.pid ?? "")}</td>
+      <td class="mono">${escapeHtml(w.cliModel)}</td>
+      <td class="mono">${escapeHtml(w.reasoningEffort || "")}</td>
+      <td>${w.enableWebSearch ? "✓" : ""}</td>
+      <td>${w.busy ? '<span class="badge badge-timeout">busy</span>' : '<span class="badge badge-success">idle</span>'}</td>
+      <td class="mono">${w.usesRemaining}</td>
+    `;
+          poolRowsEl.appendChild(tr);
+        }
+      }
+
+      // Non-critical: a failed fetch (e.g. mid-restart) just leaves the
+      // previous render in place rather than clobbering it with an error —
+      // this panel auto-refreshes, so the next tick corrects it anyway.
+      async function refreshPoolStatus() {
+        try {
+          const status = await api("/api/settings/pool-status");
+          renderPoolStatus(status);
+        } catch {
+          // ignore — see comment above
+        }
+      }
+
+      poolRefreshBtn.addEventListener("click", refreshPoolStatus);
+
+      let poolPollTimer = null;
+      function startPoolPolling() {
+        stopPoolPolling();
+        poolPollTimer = setInterval(refreshPoolStatus, 3000);
+      }
+      function stopPoolPolling() {
+        if (poolPollTimer) clearInterval(poolPollTimer);
+        poolPollTimer = null;
+      }
+      poolAutoRefreshEl.addEventListener("change", () => {
+        if (poolAutoRefreshEl.checked) startPoolPolling();
+        else stopPoolPolling();
+      });
+
+      refreshPoolStatus();
+      if (poolAutoRefreshEl.checked) startPoolPolling();
 
       // --- Recent activity (event/log viewer) ---
 
