@@ -13,6 +13,8 @@ export interface RunOptions {
   extraFlags?: string[];
   /** claude: --effort. codex: -c model_reasoning_effort=. Omitted = no flag, today's default behavior. */
   reasoningEffort?: ReasoningEffort;
+  /** See ModelMapping.enableWebSearch — each provider wires this to its own mechanism. */
+  enableWebSearch?: boolean;
   systemPrompt: string;
   transcript: string;
   timeoutMs: number;

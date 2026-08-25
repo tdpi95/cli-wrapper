@@ -224,7 +224,7 @@
   <div class="table-wrap">
     <table>
       <thead>
-        <tr><th>id</th><th>provider</th><th>cliModel</th><th>extraFlags</th><th>reasoning effort</th><th>override?</th><th>description</th><th></th></tr>
+        <tr><th>id</th><th>provider</th><th>cliModel</th><th>extraFlags</th><th>reasoning effort</th><th>override?</th><th>web search</th><th>description</th><th></th></tr>
       </thead>
       <tbody id="rows"></tbody>
     </table>
@@ -252,6 +252,9 @@
     </label>
     <label class="checkbox-row full"><input type="checkbox" name="allowReasoningEffortOverride" />
       Allow per-request override <span class="hint">(client's <code>reasoning_effort</code> field)</span>
+    </label>
+    <label class="checkbox-row full"><input type="checkbox" name="enableWebSearch" />
+      Enable web search <span class="hint">(grants the CLI's built-in web search tool — both providers)</span>
     </label>
     <label class="full">description
       <input type="text" name="description" />
@@ -469,6 +472,7 @@ function renderRows(models) {
       <td class="mono">${escapeHtml((m.extraFlags || []).join(", "))}</td>
       <td class="mono">${escapeHtml(m.reasoningEffort || "")}</td>
       <td>${m.allowReasoningEffortOverride ? "✓" : ""}</td>
+      <td>${m.enableWebSearch ? "✓" : ""}</td>
       <td>${escapeHtml(m.description || "")}</td>
       <td class="row-actions">
         <button class="edit" data-edit="${encodeURIComponent(m.id)}">✏️ Edit</button>
@@ -510,6 +514,7 @@ form.addEventListener("submit", async (e) => {
     extraFlags: fd.get("extraFlags").trim() ? fd.get("extraFlags").split(",").map((s) => s.trim()).filter(Boolean) : undefined,
     reasoningEffort: fd.get("reasoningEffort") || undefined,
     allowReasoningEffortOverride: fd.get("allowReasoningEffortOverride") === "on",
+    enableWebSearch: fd.get("enableWebSearch") === "on",
     description: fd.get("description").trim() || undefined,
   };
   try {
@@ -541,6 +546,7 @@ rowsEl.addEventListener("click", async (e) => {
     form.extraFlags.value = (m.extraFlags || []).join(", ");
     populateReasoningEffortOptions(m.reasoningEffort || "", true);
     form.allowReasoningEffortOverride.checked = !!m.allowReasoningEffortOverride;
+    form.enableWebSearch.checked = !!m.enableWebSearch;
     form.description.value = m.description || "";
     submitBtn.textContent = "Save";
     formTitle.textContent = `Edit "${id}"`;

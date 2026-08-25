@@ -362,6 +362,95 @@ case (see `openai/transform.ts`).
   as an extra option rather than silently disappearing — and reverting to a blank default —
   the moment you open that mapping and save again without touching the field.
 
+## Web search tool (`ModelMapping.enableWebSearch`, both providers)
+
+A model mapping can grant its CLI a real, built-in web search tool — the first (and, as of
+this writing, only) exception to claude's blanket `--tools ""`, and codex's first tool grant
+of any kind beyond its always-on shell/patch tools. This does **not** reverse the "Tool use
+... is an intentional non-goal" stance in the Features section below — that note is about
+real function-calling/local-exec tools (Bash/Edit/Write) reopening shell/filesystem access.
+Both providers' web search tools are executed **server-side** (Anthropic's own backend for
+claude, OpenAI's for codex), not as a local subprocess — claude's shows up as
+`server_tool_use.web_search_requests` in the turn's `usage`; codex's as `item.completed`
+events of `type:"web_search"` — nothing either CLI's *host* runs, so granting it doesn't
+reopen the local-exec risk. It does add a new, narrower one worth knowing for both: the model
+can turn conversation content into outbound search queries sent to that provider's search
+backend.
+
+### claude
+
+`--strict-mcp-config`/`--setting-sources ""` are untouched, so `WebSearch` is the *only* tool
+that can ever become available on a claude mapping, regardless of `enableWebSearch`.
+
+- **How it's spawned** (`process/claudePool.ts`'s `spawnWorker`): when `enableWebSearch` is
+  true, `--tools "WebSearch" --permission-mode "bypassPermissions"` is appended to the argv
+  *after* the base `--tools "" --permission-mode "default"` every worker gets. claude's CLI
+  parser is last-flag-wins (verified live), so this cleanly overrides the base flags rather
+  than needing a branch that omits them. `extraFlags` is appended after that, so an
+  operator's own explicit flags can still override this too if they need finer control.
+- **Why `bypassPermissions` specifically** — verified live against all six
+  `--permission-mode` values with `--tools "WebSearch"` and a prompt that reliably triggers a
+  search:
+  - `bypassPermissions` and `auto` — the tool actually executes; the CLI folds the search
+    result back in as a synthetic `tool_result` and continues to a final answer with cited
+    sources, all within the same turn (`num_turns: 2` internally). Picked `bypassPermissions`
+    as the more literal/explicit "there is no approval gate for what `--tools` already
+    allowlists" choice.
+  - `default` (what every other worker uses), `dontAsk`, `acceptEdits`, `manual` — all
+    silently/explicitly **deny** WebSearch (no TTY to approve from) and the model gracefully
+    falls back to a text-only answer. No hang in any of these — useful to know if `default`
+    is ever reused with `--tools` set to something non-empty for some other reason.
+  - `plan` — **hangs indefinitely**, confirmed live (had to be killed by the test harness'
+    own timeout). It waits for an interactive plan-approval round trip that never arrives
+    over stdin-only `--input-format stream-json`. `raceWithTimeoutAndAbort` would eventually
+    kill a worker stuck here (bounded by `opts.timeoutMs`, same as any other turn), so this
+    wouldn't violate the "never hangs past the request timeout" guarantee, but it'd burn the
+    full timeout on every single search — never pick this mode for anything spawned here.
+- **Pool key**: `enableWebSearch` is part of `PoolKeyParts`/`poolKeyFor`, same reasoning as
+  `reasoningEffort` — it's spawn-time-only (can't grant/revoke a tool on a live process), and
+  it's a boolean (bounded multiplier on pool size, not unbounded cardinality like system
+  prompt). A search-enabled and a non-search-enabled mapping that otherwise share
+  `(cliModel, extraFlags, reasoningEffort)` get two separate pools, never one shared worker.
+- **No changes needed in the streaming/non-streaming event handling.** `waitForResult` only
+  acts on `text_delta`/`thinking_delta` content and resolves on the final `"result"` event —
+  every event in between a tool call and the final answer (`content_block_start`
+  `type:"tool_use"`, the tool's `input_json_delta`s, the intermediate `system:"requesting"`,
+  the synthetic `user` `tool_result` message, a `system:"permission_denied"` if the mode
+  denies it) was already covered by the existing catch-all comment on that function and
+  required zero code changes — confirmed live by running an actual WebSearch-augmented turn
+  through the exact same event-parsing path unmodified.
+- **Cost/latency**: only paid on turns where the model actually decides to search (not every
+  request) — adds one real Anthropic-billed search call (separate line item from tokens) plus
+  the round-trip latency of a second internal model turn, on the order of several extra
+  seconds observed live, on top of a plain turn's usual latency.
+
+### codex
+
+- **How it's passed** (`providers/codex.ts`'s `args()`): `enableWebSearch` appends `-c
+  tools.web_search=true` — the one-off-override form of a `config.toml` `[tools]` block
+  (found by pulling the config schema strings out of the actual codex native binary: a
+  `ToolsToml` struct has a `web_search` field). Unlike claude, there's no permission-mode
+  fight to have — `codex exec` never prompts for approval regardless of what tools are
+  enabled (see gotcha #3) — so this is the only flag needed.
+- **Verified live**: `codex exec --json -c tools.web_search=true "..."` produced real
+  `item.started`/`item.completed` events of `type:"web_search"` (with the actual query and,
+  in one run, a cited article URL suggesting the tool fetches content, not just snippet
+  links), followed by an `agent_message` confirming it used the tool and citing sources.
+  Reproduced through the actual HTTP wrapper too (a codex mapping with `enableWebSearch:
+  true`), both streaming and non-streaming.
+- **No changes needed in `consume()`'s event loop either** — same shape as claude's finding:
+  the loop only pattern-matches `agent_message`/`reasoning`/`error`/`turn.completed`, and
+  silently ignores anything else (see its trailing "ignore" comment) — `web_search` items
+  fell through harmlessly with zero code changes required to discover this worked.
+- **Not model/account-validated.** The binary's own strings reference
+  `supports_standalone_web_search` as a per-model-provider capability flag, and there's an
+  `under development` `standalone_web_search` feature flag in `codex features list` that
+  wasn't needed to make this work on the account tested here (gpt-5.5, ChatGPT-plan auth) —
+  plausible this doesn't work identically on every account/model, same as gotcha #4's
+  `gpt-5-codex` situation. Not re-verified across accounts.
+- **Settings page**: model routing form/table gained an "Enable web search" checkbox/column
+  next to the reasoning-effort controls, applying to either provider.
+
 ## Open optimizations for future development
 
 Roughly ordered by likely value; the warm process pool below is the only one of these

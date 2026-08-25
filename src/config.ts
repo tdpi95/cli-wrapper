@@ -183,6 +183,9 @@ function validateMapping(m: Partial<ModelMapping>): asserts m is ModelMapping {
   if (m.allowReasoningEffortOverride !== undefined && typeof m.allowReasoningEffortOverride !== "boolean") {
     throw new ValidationError("`allowReasoningEffortOverride` must be a boolean");
   }
+  if (m.enableWebSearch !== undefined && typeof m.enableWebSearch !== "boolean") {
+    throw new ValidationError("`enableWebSearch` must be a boolean");
+  }
 }
 
 export function addMapping(input: Partial<ModelMapping>): ModelMapping {

@@ -24,10 +24,24 @@
       "description": "Claude Opus via the Claude Code CLI, extended thinking on by default (override with the request's reasoning_effort field)"
     },
     {
+      "id": "claude-sonnet-5-websearch",
+      "provider": "claude",
+      "cliModel": "sonnet",
+      "enableWebSearch": true,
+      "description": "Claude Sonnet with the built-in WebSearch tool enabled"
+    },
+    {
       "id": "gpt-5.5",
       "provider": "codex",
       "cliModel": "gpt-5.5",
       "description": "GPT-5.5 via the Codex CLI"
+    },
+    {
+      "id": "gpt-5.5-websearch",
+      "provider": "codex",
+      "cliModel": "gpt-5.5",
+      "enableWebSearch": true,
+      "description": "GPT-5.5 via the Codex CLI with its built-in web_search tool enabled"
     }
   ]
 }

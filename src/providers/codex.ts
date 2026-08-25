@@ -40,6 +40,17 @@ function args(opts: RunOptions): string[] {
     ...(opts.reasoningEffort
       ? ["-c", `model_reasoning_effort=${opts.reasoningEffort}`, "-c", "model_reasoning_summary=detailed", "-c", "show_raw_agent_reasoning=true"]
       : []),
+    // Grants codex's built-in web_search tool (config.toml's [tools] block,
+    // here as a one-off -c override). Unlike claude, there's no permission
+    // gate to fight — codex exec never prompts (see gotcha #3) — so this is
+    // just the one flag. Verified live: produces real item.completed events
+    // of type "web_search" plus a final agent_message citing what it found;
+    // consume()'s event loop already ignores item types it doesn't
+    // pattern-match (see its trailing "ignore" comment), so no changes were
+    // needed there to support this. Whether the account/model actually
+    // supports it isn't re-validated here — same laissez-faire approach as
+    // cliModel (gotcha #4).
+    ...(opts.enableWebSearch ? ["-c", "tools.web_search=true"] : []),
     "-m",
     opts.cliModel,
     "-C",

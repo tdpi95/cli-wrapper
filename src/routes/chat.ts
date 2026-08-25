@@ -80,6 +80,7 @@ export function chatRouter(): Router {
         cliModel: mapping.cliModel,
         extraFlags: mapping.extraFlags,
         reasoningEffort,
+        enableWebSearch: mapping.enableWebSearch,
         systemPrompt,
         transcript,
         timeoutMs: settings.cliTimeoutMs,

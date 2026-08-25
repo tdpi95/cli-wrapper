@@ -1,9 +1,32 @@
 # cli-wrapper
 
 An OpenAI-compatible HTTP API backed by the `claude` (Claude Code) and `codex` CLIs, run as
-chat-only subprocesses (no file/shell tool access). Includes a settings page — open to
-anyone who can reach the server, no login — for editing model routing and all server
-configuration live, without touching env vars or restarting.
+chat-only subprocesses (no file/shell tool access). Point any OpenAI-compatible SDK or tool
+at it and it just works, using whichever `claude`/`codex` login is already sitting on the
+host — no separate API key to provision for the model calls themselves.
+
+- **Drop-in OpenAI API** — `/v1/chat/completions` (streaming + non-streaming) and
+  `/v1/models`, backed by a routing table you define (`config.json`'s `models`).
+- **Live, no-restart settings page** at `/settings` — model routing, API key, timeout,
+  working directory, and activity log, all editable without touching env vars or restarting
+  (open to anyone who can reach the server, by design — see the callout below).
+- **Warm process pool for `claude`** — reuses already-running `claude` processes across
+  requests instead of paying a full CLI boot every call, while staying fully stateless from
+  the client's point of view.
+- **Reasoning effort control** — set a default per model mapping, optionally let a request's
+  own `reasoning_effort` field override it, and get any reasoning/thinking content back as
+  `reasoning_content`.
+- **Optional built-in web search** — per model mapping, grant `claude`'s `WebSearch` tool or
+  `codex`'s `web_search` tool, without opening up general shell/file tool access.
+- **Recent-activity log** — the last 200 requests, viewable on the settings page, with
+  optional full prompt/response capture and optional disk persistence.
+
+## Contents
+
+[Prerequisites](#prerequisites) · [Setup](#setup) · [Configuration](#configuration) ·
+[Usage](#usage) · [Shipping to another machine](#shipping-to-another-machine) ·
+[Notes / limitations](#notes--limitations) · [Environment variables](#environment-variables) ·
+[More docs](#more-docs)
 
 ## Prerequisites
 
@@ -47,6 +70,25 @@ Everything that used to be an env var now lives in `config.json` and is editable
 - **Port**, **CLI timeout**, **CLI working directory**.
 - **Activity log**: whether full prompt/response text is captured, and an optional file
   path to persist the last 200 entries to disk (see "Recent activity" below).
+
+### Model routing
+
+The `models` array in `config.json` (or the "Model routing" table on `/settings`) is what
+maps a client-facing `model` name to an actual CLI invocation:
+
+| Field | Required | Meaning |
+|---|---|---|
+| `id` | yes | The name clients send as `model` in their request. |
+| `provider` | yes | `claude` or `codex`. |
+| `cliModel` | yes | Passed straight through to `--model`/`-m` — e.g. `sonnet`/`opus` for claude, `gpt-5.5` for codex. Account-dependent; see the callout above. |
+| `extraFlags` | no | Raw argv appended verbatim to the CLI invocation — an escape hatch for anything not covered by the fields below. |
+| `reasoningEffort` | no | Default reasoning effort: `minimal` / `low` / `medium` / `high` / `xhigh` / `max`. Not every value is valid for every provider (see "Reasoning effort and content" below) — an invalid combination surfaces as a CLI-level error at request time, not a config-save-time rejection. |
+| `allowReasoningEffortOverride` | no | Let a request's own `reasoning_effort` field override the default above for that call. Off by default. |
+| `enableWebSearch` | no | Grant this mapping's CLI its built-in web search tool — `claude`'s `WebSearch`, or `codex`'s `web_search`. See "Web search tool" below. |
+| `description` | no | Free text, shown on the settings page only. |
+
+`config.example.json` has working examples of each of these, including a plain mapping per
+provider and one web-search-enabled mapping per provider.
 
 Only two things remain env vars, because they're needed before `config.json` can even be
 located: `CONFIG_PATH` (default `./config.json`) and an optional `PORT` override for
@@ -148,9 +190,9 @@ ask if you want that built out; see `AGENTS.md`'s open optimizations for the tra
   than failing outright, bounded by the same CLI timeout as any other request — so under
   heavy concurrent load a request may wait for a slot before it starts, rather than erroring
   immediately. `codex`-routed requests have no such cap.
-- **Chat-only**: both CLIs run with tools/file/shell access disabled. `claude` uses
-  `--tools ""`; `codex` uses `--sandbox read-only`. Neither can modify your filesystem or
-  run commands via this wrapper.
+- **Chat-only**: both CLIs run with tools/file/shell access disabled by default. `claude`
+  uses `--tools ""`; `codex` uses `--sandbox read-only`. Neither can modify your filesystem
+  or run commands via this wrapper. The one opt-in exception is the web search tool below.
 - **Unsupported OpenAI fields**: `temperature`, `max_tokens`, `top_p`, etc. are accepted in
   the request body but ignored — the underlying CLIs don't expose equivalent controls
   through this wrapper.
@@ -166,7 +208,15 @@ ask if you want that built out; see `AGENTS.md`'s open optimizations for the tra
   claude specifically: some accounts/plans redact the actual thinking text while still
   billing the tokens for it — in that case `reasoning_content` just won't appear, even
   though effort/cost was genuinely spent.
-- **Tool use / function calling isn't supported** — not just unimplemented, but not
+- **Web search tool**: a model mapping can set `enableWebSearch: true` to grant its CLI a
+  real, built-in web search tool — `claude`'s `WebSearch` (executed server-side by
+  Anthropic) or `codex`'s `web_search` (executed server-side by OpenAI). Off by default: no
+  tools are available to either CLI unless a mapping opts in. This is a narrow, deliberate
+  exception to general tool use below, not a reversal of it — see AGENTS.md's "Web search
+  tool" section for the full investigation (why claude specifically needs
+  `--permission-mode bypassPermissions`, why codex needs nothing extra, and why neither
+  required any change to the response-parsing code to support).
+- **General tool use / function calling isn't supported** — not just unimplemented, but not
   possible with these CLIs as invoked here: both run their tool loop to completion
   internally and never hand an unexecuted call back out for a client to run and return a
   result for, which real OpenAI/Anthropic function-calling requires. See AGENTS.md for how

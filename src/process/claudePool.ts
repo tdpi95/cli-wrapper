@@ -28,6 +28,14 @@ import type { RunOptions, RunResult, StopReason, StreamChunk, Usage } from "../p
 //   unbounded cardinality, and MAX_TOTAL_WORKERS still caps the worst case.
 //   A request with no reasoningEffort gets no --effort flag at all — same
 //   as today's behavior for every mapping that doesn't set one.
+// - --tools/--permission-mode are spawn-time-only too, for the same reason,
+//   so `enableWebSearch` (see ModelMapping.enableWebSearch/RunOptions) is
+//   also part of the pool key. See AGENTS.md's "Web search tool" section for
+//   why this needs --permission-mode "bypassPermissions" specifically (not
+//   the "default" every other worker spawns with) — short version: "default"
+//   silently denies WebSearch non-interactively (no TTY to approve from),
+//   and --permission-mode "plan" hangs forever waiting for an approval round
+//   trip that never comes over stdin-only stream-json. Both verified live.
 // - --system-prompt is ALSO spawn-time-only. Rather than one pool per
 //   distinct system prompt (unbounded cardinality — every client could send
 //   a different one), the system prompt is folded into the turn text itself
@@ -80,6 +88,7 @@ interface PoolKeyParts {
   cliModel: string;
   extraFlags?: string[];
   reasoningEffort?: string;
+  enableWebSearch?: boolean;
 }
 
 interface TurnHandlers {
@@ -112,8 +121,8 @@ const idleWorkers = new Map<string, Worker[]>();
 const allWorkers = new Set<Worker>();
 const waiters: Waiter[] = [];
 
-function poolKeyFor({ cliModel, extraFlags, reasoningEffort }: PoolKeyParts): string {
-  return JSON.stringify([cliModel, extraFlags ?? [], reasoningEffort ?? null]);
+function poolKeyFor({ cliModel, extraFlags, reasoningEffort, enableWebSearch }: PoolKeyParts): string {
+  return JSON.stringify([cliModel, extraFlags ?? [], reasoningEffort ?? null, !!enableWebSearch]);
 }
 
 function randomRetireAfter(): number {
@@ -160,6 +169,17 @@ function spawnWorker(key: string, spawnArgs: PoolKeyParts, workdir: string): Wor
     "--model",
     spawnArgs.cliModel,
     ...(spawnArgs.reasoningEffort ? ["--effort", spawnArgs.reasoningEffort] : []),
+    // Overrides the "--tools ''"/"--permission-mode default" above — claude's
+    // parser is last-flag-wins (verified live). bypassPermissions specifically:
+    // "default" (and dontAsk/acceptEdits/manual) silently DENY WebSearch with
+    // no TTY to approve from, and "plan" mode hangs indefinitely waiting for
+    // a plan-approval round trip that never comes over stdin-only stream-json
+    // — both confirmed live. bypassPermissions (or "auto") is what actually
+    // lets the CLI execute the search itself and fold the result back in.
+    // See AGENTS.md's "Web search tool" section for the full investigation.
+    ...(spawnArgs.enableWebSearch ? ["--tools", "WebSearch", "--permission-mode", "bypassPermissions"] : []),
+    // extraFlags stays last so an operator's own explicit flags can still
+    // override anything above, including this.
     ...(spawnArgs.extraFlags ?? []),
   ];
   const child = spawn(CMD, args, { cwd: workdir, shell: false, stdio: ["pipe", "pipe", "pipe"] });
@@ -498,7 +518,11 @@ async function clearConversation(worker: Worker, opts: RunOptions): Promise<void
 }
 
 export async function runWarmNonStreaming(opts: RunOptions): Promise<RunResult> {
-  const worker = await acquireWorker({ cliModel: opts.cliModel, extraFlags: opts.extraFlags, reasoningEffort: opts.reasoningEffort }, opts.workdir, opts);
+  const worker = await acquireWorker(
+    { cliModel: opts.cliModel, extraFlags: opts.extraFlags, reasoningEffort: opts.reasoningEffort, enableWebSearch: opts.enableWebSearch },
+    opts.workdir,
+    opts
+  );
   try {
     await clearConversation(worker, opts);
 
@@ -533,7 +557,11 @@ export async function* runWarmStreaming(opts: RunOptions): AsyncIterable<StreamC
     // throwing out of the generator, matching codex.ts's error-chunk style.
     let worker: Worker;
     try {
-      worker = await acquireWorker({ cliModel: opts.cliModel, extraFlags: opts.extraFlags, reasoningEffort: opts.reasoningEffort }, opts.workdir, opts);
+      worker = await acquireWorker(
+        { cliModel: opts.cliModel, extraFlags: opts.extraFlags, reasoningEffort: opts.reasoningEffort, enableWebSearch: opts.enableWebSearch },
+        opts.workdir,
+        opts
+      );
     } catch (err) {
       queue.push({ kind: "error", message: err instanceof Error ? err.message : String(err) });
       queue.end();

@@ -34,6 +34,25 @@ export interface ModelMapping {
    * mapping hasn't opted in, rather than erroring.
    */
   allowReasoningEffortOverride?: boolean;
+  /**
+   * Grants this mapping's CLI its own built-in web search tool. Each provider
+   * wires this to its own mechanism (see AGENTS.md's "Web search tool"
+   * section for the full investigation behind both):
+   *   - claude: `--tools "WebSearch" --permission-mode "bypassPermissions"`
+   *     at spawn time (process/claudePool.ts's spawnWorker). Executed
+   *     server-side by Anthropic (billed as
+   *     `server_tool_use.web_search_requests`, not a local subprocess/file
+   *     write) — a deliberate, narrow exception to the "Tool use ... is an
+   *     intentional non-goal" note elsewhere in AGENTS.md, not a reversal of it.
+   *   - codex: `-c tools.web_search=true` (providers/codex.ts's args()).
+   *     codex exec never prompts for approval regardless (see gotcha #3), so
+   *     there's no permission-mode equivalent to pick here.
+   * Omitted/false = today's behavior, unchanged: no tools available to
+   * either CLI. Whether the account/model actually supports it isn't
+   * validated for either provider — same laissez-faire approach as
+   * `cliModel`/`reasoningEffort` (see gotcha #4).
+   */
+  enableWebSearch?: boolean;
 }
 
 /**
