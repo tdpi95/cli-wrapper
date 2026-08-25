@@ -40,12 +40,18 @@ export function killWithGrace(proc: { kill(signal: NodeJS.Signals): boolean; kil
 export function spawnManaged(
   cmd: string,
   args: string[],
-  opts: { cwd: string; timeoutMs: number; signal?: AbortSignal }
+  opts: { cwd: string; timeoutMs: number; signal?: AbortSignal; env?: Record<string, string | undefined> }
 ): ManagedProcess {
   const proc = spawn(cmd, args, {
     cwd: opts.cwd,
     shell: false,
     stdio: ["ignore", "pipe", "pipe"],
+    // Always inherit the parent's env, then let opts.env layer overrides on
+    // top — omitting `env` entirely would also inherit, but a caller (see
+    // codex.ts's proxy-bypass setting) needs to add/override specific keys
+    // without losing everything else the parent process has (PATH, auth
+    // tokens, etc.).
+    env: opts.env ? { ...process.env, ...opts.env } : undefined,
   });
 
   let timedOut = false;

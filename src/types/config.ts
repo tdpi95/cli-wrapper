@@ -89,6 +89,28 @@ export interface WrapperSettings {
   logCaptureContent: boolean;
   /** Path to persist the activity log to, or null to keep it in-memory only. */
   logFilePath: string | null;
+  /**
+   * When true, the spawned `codex` subprocess gets NO_PROXY/no_proxy widened
+   * to also cover OpenAI's own hosts (chatgpt.com/openai.com and their
+   * subdomains) — see AGENTS.md gotcha #5's "Fixing the slow start" addendum.
+   * Fixes a specific, verified-live symptom: some corporate HTTP(S) proxies
+   * (set via the process's own HTTPS_PROXY/https_proxy) reject codex's
+   * WebSocket upgrade to `wss://chatgpt.com/...` with a `405 Method Not
+   * Allowed`, and codex retries that handshake 5 times with backoff (~18-30s
+   * wasted) before falling back to HTTPS on every single call. Routing
+   * around the proxy for just those two host families lets the WebSocket
+   * handshake succeed directly instead, cutting a request that took ~28-40s
+   * down to ~6-7s in the environment this was diagnosed in.
+   * Default false (opt-in), not a silent default: this only ever helps when
+   * (a) a proxy is actually in play and mishandling this specific upgrade,
+   * and (b) this host's network allows direct (non-proxied) egress to those
+   * domains at all — on a network where only the proxy has any route out,
+   * forcing a bypass would turn "slow" into "broken" instead. Only affects
+   * the codex subprocess's own environment (see process/run.ts's
+   * spawnManaged `env` option) — never the wrapper server's own process env,
+   * and has no effect on the claude provider.
+   */
+  codexBypassProxyForOpenAI: boolean;
 }
 
 export interface WrapperConfig {
@@ -104,4 +126,5 @@ export const DEFAULT_SETTINGS: WrapperSettings = {
   cliWorkdir: "./.cli-wrapper-workspace",
   logCaptureContent: true,
   logFilePath: null,
+  codexBypassProxyForOpenAI: false,
 };

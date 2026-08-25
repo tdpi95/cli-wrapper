@@ -225,6 +225,29 @@ These are documented in detail as comments at their fix sites, but the summary:
    `item.completed`/`type:"error"` JSONL event, as fatal by itself for codex — only "no
    `agent_message` ever arrived" is failure (see `providers/codex.ts`).
 
+   **Fixing the slow start**: root-caused to a corporate HTTP(S) proxy (set via the
+   process's own `HTTPS_PROXY`/`https_proxy`) that rejects codex's WebSocket upgrade to
+   `wss://chatgpt.com/backend-api/codex/responses` with `405 Method Not Allowed`. codex
+   retries that handshake 5 times with backoff before falling back to plain HTTPS, and pays
+   that retry cost on *every single call*, not just the first. Fix:
+   `WrapperSettings.codexBypassProxyForOpenAI` (settings page checkbox, default `false`,
+   opt-in) widens `NO_PROXY`/`no_proxy` — merged onto whatever the operator's environment
+   already has there, both casings — to also cover `chatgpt.com`/`.chatgpt.com`/
+   `openai.com`/`.openai.com`, scoped to just the spawned `codex` subprocess's own env
+   (`process/run.ts`'s `spawnManaged` `env` option; never the wrapper server's own process
+   env, and no effect on the claude provider) — see `providers/codex.ts`'s
+   `proxyBypassEnv()`. Read fresh per call like every other setting, so flipping it on
+   `/settings` takes effect on the very next request with no restart.
+   Verified live with a real corporate proxy in play (`HTTPS_PROXY` pointed at an internal
+   proxy that mishandles this specific upgrade), 4 trials each way, driving the actual
+   `codexProvider.runNonStreaming` code path directly (not just the raw `codex` CLI):
+   `false` → 21.06s / 18.68s / 20.31s / 22.73s, websocket 405 errors on every single run;
+   `true` → 6.80s / 8.95s / 6.04s / 6.82s, zero websocket errors — a clean, non-overlapping
+   ~3x speedup, not a fluke. Default stays `false`, not silently on: it only helps when (a)
+   a proxy is actually in play and mishandling this upgrade, and (b) the host's network
+   allows direct, non-proxied egress to those two domains at all — on a network where only
+   the proxy has any route out, forcing a bypass would turn "slow" into "broken" instead.
+
 6. **Both CLIs leak this very repo's own context into chat completions if `cliWorkdir`
    sits inside it (as the default `./.cli-wrapper-workspace` does) — and claude leaks it
    even from a directory outside the repo, whenever a request carries no system prompt.**

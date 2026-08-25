@@ -470,6 +470,17 @@
           Store full prompt/response text in the activity log (off = metadata
           only: model, status, duration, tokens)
         </label>
+        <label class="checkbox-row full">
+          <input type="checkbox" name="codexBypassProxyForOpenAI" />
+          Bypass HTTP proxy for OpenAI hosts on codex requests
+          <span class="hint"
+            >(fixes a slow codex first response — a proxy that rejects
+            codex's WebSocket upgrade can add ~20-30s of retries before it
+            falls back to HTTPS; only enable if codex requests are slow AND
+            this network allows direct, non-proxied access to
+            chatgpt.com/openai.com)</span
+          >
+        </label>
         <div class="full actions">
           <button type="submit" class="primary">Save settings</button>
         </div>
@@ -752,6 +763,7 @@
         settingsForm.cliWorkdir.value = s.cliWorkdir;
         settingsForm.logFilePath.value = s.logFilePath || "";
         settingsForm.logCaptureContent.checked = !!s.logCaptureContent;
+        settingsForm.codexBypassProxyForOpenAI.checked = !!s.codexBypassProxyForOpenAI;
       }
 
       async function refreshSettings() {
@@ -783,6 +795,7 @@
           cliWorkdir: fd.get("cliWorkdir").trim(),
           logFilePath: fd.get("logFilePath").trim() || null,
           logCaptureContent: fd.get("logCaptureContent") === "on",
+          codexBypassProxyForOpenAI: fd.get("codexBypassProxyForOpenAI") === "on",
         };
         try {
           const updated = await api("/api/settings/config", {

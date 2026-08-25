@@ -163,6 +163,9 @@ function validateSettings(s: WrapperSettings): void {
   if (s.logFilePath !== null && (typeof s.logFilePath !== "string" || s.logFilePath.trim() === "")) {
     throw new ValidationError("`logFilePath` must be a non-empty string or null");
   }
+  if (typeof s.codexBypassProxyForOpenAI !== "boolean") {
+    throw new ValidationError("`codexBypassProxyForOpenAI` must be a boolean");
+  }
 }
 
 /** Merges `patch` onto the current settings, validates, and saves. Returns the new settings. */
