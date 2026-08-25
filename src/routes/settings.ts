@@ -4,6 +4,7 @@ import { addMapping, deleteMapping, getSettings, loadConfig, updateMapping, upda
 import { toApiError } from "../errors.js";
 import { clearLogEntries, getLogEntries, getLogPersistPath, isLogPersistenceEnabled, setLogPersistPath } from "../logs.js";
 import { getPoolStatus } from "../process/claudePool.js";
+import { getCodexPoolStatus } from "../process/codexAppServer.js";
 
 // No auth on any route in this file, by design — see the note in app.ts.
 export function settingsRouter(publicDir: string): Router {
@@ -84,10 +85,15 @@ export function settingsRouter(publicDir: string): Router {
     res.status(204).end();
   });
 
-  // claude only — codex has no persistent pool to report on (a fresh `codex
-  // exec` is spawned per request; see AGENTS.md's "Warm claude process pool").
   router.get("/api/settings/pool-status", (_req, res) => {
     res.json(getPoolStatus());
+  });
+
+  // codexUseWarmPool off (the default) means `daemons` is empty and this
+  // just reports enabled:false with no rows — see AGENTS.md's "Warm codex
+  // app-server pool" section.
+  router.get("/api/settings/codex-pool-status", (_req, res) => {
+    res.json(getCodexPoolStatus());
   });
 
   return router;

@@ -6,7 +6,10 @@
     "cliTimeoutMs": 300000,
     "cliWorkdir": "./.cli-wrapper-workspace",
     "logCaptureContent": true,
-    "logFilePath": null
+    "logFilePath": null,
+    "codexBypassProxyForOpenAI": false,
+    "codexUseWarmPool": false,
+    "codexPoolSize": 2
   },
   "models": [
     {

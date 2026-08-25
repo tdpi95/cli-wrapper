@@ -111,6 +111,35 @@ export interface WrapperSettings {
    * and has no effect on the claude provider.
    */
   codexBypassProxyForOpenAI: boolean;
+  /**
+   * EXPERIMENTAL, default false (opt-in) — see AGENTS.md's "Warm codex
+   * app-server pool" section before enabling. When true, codex requests are
+   * routed through process/codexAppServer.ts's warm `codex app-server`
+   * daemon pool instead of spawning a fresh one-shot `codex exec` per
+   * request (providers/codex.ts's legacy path, still used whenever this is
+   * false). Verified live to be meaningfully faster (a warm daemon's per-turn
+   * overhead is ~4-6s vs. ~6-9s for a fresh exec process, even with
+   * codexBypassProxyForOpenAI already on), but `codex app-server` is a
+   * JSON-RPC protocol with no official client library and no documented
+   * backwards-compatibility guarantee across codex versions (it does back
+   * OpenAI's own Codex VS Code extension, so the core thread/turn methods
+   * this wrapper uses aren't a throwaway experiment — just not a contract).
+   * Defaults off so a codex CLI upgrade that changes this protocol can't
+   * silently break requests on an existing deployment; an operator opts in
+   * after confirming it works against their installed codex version.
+   */
+  codexUseWarmPool: boolean;
+  /**
+   * Number of `codex app-server` daemon processes to keep warm when
+   * codexUseWarmPool is true. Unlike claude's pool, this does NOT bound
+   * concurrency (a single daemon handles multiple simultaneous turns fine —
+   * see process/codexAppServer.ts) — it only bounds how many OS processes
+   * exist, and therefore the blast radius if one crashes (every turn
+   * multiplexed on a dead daemon fails together). 1 works but has no
+   * redundancy; the default of 2 is a modest safety margin, not a
+   * throughput knob. Ignored entirely when codexUseWarmPool is false.
+   */
+  codexPoolSize: number;
 }
 
 export interface WrapperConfig {
@@ -127,4 +156,6 @@ export const DEFAULT_SETTINGS: WrapperSettings = {
   logCaptureContent: true,
   logFilePath: null,
   codexBypassProxyForOpenAI: false,
+  codexUseWarmPool: false,
+  codexPoolSize: 2,
 };

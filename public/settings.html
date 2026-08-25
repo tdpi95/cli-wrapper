@@ -481,6 +481,24 @@
             chatgpt.com/openai.com)</span
           >
         </label>
+        <label class="checkbox-row full">
+          <input type="checkbox" name="codexUseWarmPool" />
+          Use the warm codex process pool (EXPERIMENTAL)
+          <span class="hint"
+            >(routes codex requests through a long-lived `codex app-server`
+            daemon instead of spawning a fresh process per request — faster,
+            but talks to an undocumented, no-compatibility-guarantee JSON-RPC
+            protocol; leave off unless you've confirmed it works against your
+            installed codex version. Default off.)</span
+          >
+        </label>
+        <label>
+          <span
+            >Codex pool size
+            <span class="hint">(only used when the pool above is on)</span></span
+          >
+          <input type="number" name="codexPoolSize" min="1" step="1" />
+        </label>
         <div class="full actions">
           <button type="submit" class="primary">Save settings</button>
         </div>
@@ -573,13 +591,7 @@
       <div class="card-header">
         <div>
           <h2>Claude process pool</h2>
-          <p>
-            Live warm-process pool status.
-            <span id="pool-provider-note"
-              >codex has no persistent pool — it spawns a fresh process per
-              request, so there's nothing to show for it here.</span
-            >
-          </p>
+          <p>Live warm-process pool status.</p>
         </div>
         <div class="log-controls">
           <label
@@ -607,6 +619,46 @@
       </div>
       <p id="pool-empty" style="display: none">
         No warm claude processes running right now.
+      </p>
+    </div>
+
+    <div class="card">
+      <div class="card-header">
+        <div>
+          <h2>Codex process pool</h2>
+          <p>
+            Live warm `codex app-server` daemon status.
+            <span id="codex-pool-disabled-note"
+              >Off by default (EXPERIMENTAL) — enable "Use the warm codex
+              process pool" above to use it; until then codex spawns a fresh
+              `codex exec` process per request and there's nothing to show
+              here.</span
+            >
+          </p>
+        </div>
+        <div class="log-controls">
+          <label
+            ><input type="checkbox" id="codex-pool-auto-refresh" checked />
+            Auto-refresh</label
+          >
+          <button type="button" id="codex-pool-refresh-btn">Refresh</button>
+        </div>
+      </div>
+      <p id="codex-pool-status-summary" class="notes"></p>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>PID</th>
+              <th>in-flight turns</th>
+              <th>turns served</th>
+            </tr>
+          </thead>
+          <tbody id="codex-pool-rows"></tbody>
+        </table>
+      </div>
+      <p id="codex-pool-empty" style="display: none">
+        No warm codex app-server daemons running right now.
       </p>
     </div>
 
@@ -764,6 +816,8 @@
         settingsForm.logFilePath.value = s.logFilePath || "";
         settingsForm.logCaptureContent.checked = !!s.logCaptureContent;
         settingsForm.codexBypassProxyForOpenAI.checked = !!s.codexBypassProxyForOpenAI;
+        settingsForm.codexUseWarmPool.checked = !!s.codexUseWarmPool;
+        settingsForm.codexPoolSize.value = s.codexPoolSize;
       }
 
       async function refreshSettings() {
@@ -796,6 +850,8 @@
           logFilePath: fd.get("logFilePath").trim() || null,
           logCaptureContent: fd.get("logCaptureContent") === "on",
           codexBypassProxyForOpenAI: fd.get("codexBypassProxyForOpenAI") === "on",
+          codexUseWarmPool: fd.get("codexUseWarmPool") === "on",
+          codexPoolSize: Number(fd.get("codexPoolSize")),
         };
         try {
           const updated = await api("/api/settings/config", {
@@ -1049,6 +1105,74 @@
 
       refreshPoolStatus();
       if (poolAutoRefreshEl.checked) startPoolPolling();
+
+      // --- Codex app-server pool status ---
+
+      const codexPoolRowsEl = document.getElementById("codex-pool-rows");
+      const codexPoolEmptyEl = document.getElementById("codex-pool-empty");
+      const codexPoolSummaryEl = document.getElementById(
+        "codex-pool-status-summary",
+      );
+      const codexPoolDisabledNoteEl = document.getElementById(
+        "codex-pool-disabled-note",
+      );
+      const codexPoolAutoRefreshEl = document.getElementById(
+        "codex-pool-auto-refresh",
+      );
+      const codexPoolRefreshBtn = document.getElementById(
+        "codex-pool-refresh-btn",
+      );
+
+      function renderCodexPoolStatus(status) {
+        codexPoolDisabledNoteEl.style.display = status.enabled
+          ? "none"
+          : "inline";
+        codexPoolSummaryEl.textContent = status.enabled
+          ? `${status.totalDaemons} / ${status.poolSize} warm daemons running · ${status.totalInFlightTurns} turn(s) in flight`
+          : "";
+        codexPoolRowsEl.innerHTML = "";
+        codexPoolEmptyEl.style.display = status.daemons.length
+          ? "none"
+          : "block";
+        for (const d of status.daemons) {
+          const tr = document.createElement("tr");
+          tr.innerHTML = `
+      <td class="mono">${escapeHtml(d.pid ?? "")}</td>
+      <td class="mono">${d.inFlightTurns}</td>
+      <td class="mono">${d.turnsServed}</td>
+    `;
+          codexPoolRowsEl.appendChild(tr);
+        }
+      }
+
+      // Non-critical, same rationale as refreshPoolStatus above.
+      async function refreshCodexPoolStatus() {
+        try {
+          const status = await api("/api/settings/codex-pool-status");
+          renderCodexPoolStatus(status);
+        } catch {
+          // ignore
+        }
+      }
+
+      codexPoolRefreshBtn.addEventListener("click", refreshCodexPoolStatus);
+
+      let codexPoolPollTimer = null;
+      function startCodexPoolPolling() {
+        stopCodexPoolPolling();
+        codexPoolPollTimer = setInterval(refreshCodexPoolStatus, 3000);
+      }
+      function stopCodexPoolPolling() {
+        if (codexPoolPollTimer) clearInterval(codexPoolPollTimer);
+        codexPoolPollTimer = null;
+      }
+      codexPoolAutoRefreshEl.addEventListener("change", () => {
+        if (codexPoolAutoRefreshEl.checked) startCodexPoolPolling();
+        else stopCodexPoolPolling();
+      });
+
+      refreshCodexPoolStatus();
+      if (codexPoolAutoRefreshEl.checked) startCodexPoolPolling();
 
       // --- Recent activity (event/log viewer) ---
 
