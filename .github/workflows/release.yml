@@ -1,0 +1,56 @@
+name: Release
+
+# Triggered by pushing a tag like v0.1.0. Does NOT publish to the npm registry
+# (package.json has "private": true, matching this repo's actual distribution
+# story — see AGENTS.md's "Packaging / distribution" and README's "Shipping to
+# another machine"). Instead it builds the same cli-wrapper-<version>.tgz that
+# `npm pack` produces locally and attaches it to a GitHub Release, so shipping
+# to another machine can be "download from Releases" instead of a manual
+# npm pack + scp.
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Verify tag matches package.json version
+        run: |
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          PKG_VERSION="$(node -p "require('./package.json').version")"
+          if [ "$TAG_VERSION" != "$PKG_VERSION" ]; then
+            echo "Tag $GITHUB_REF_NAME does not match package.json version $PKG_VERSION" >&2
+            exit 1
+          fi
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Build
+        run: npm run build
+
+      - name: Pack
+        run: npm pack
+
+      - name: Create GitHub release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" cli-wrapper-*.tgz \
+            --title "$GITHUB_REF_NAME" \
+            --generate-notes
