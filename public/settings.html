@@ -1,471 +1,824 @@
 <!doctype html>
 <html lang="en">
-<head>
-<meta charset="utf-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>cli-wrapper settings</title>
-<style>
-  :root {
-    color-scheme: light dark;
-    --bg: #f6f7f9;
-    --card: #ffffff;
-    --border: #e2e5ea;
-    --text: #1a1d23;
-    --text-dim: #6b7280;
-    --text-faint: #9aa1ac;
-    --accent: #3457d5;
-    --accent-hover: #2743ad;
-    --danger: #b91c1c;
-    --danger-bg: #fdecec;
-    --success-text: #157a3d;
-    --success-bg: #e6f7ec;
-    --warn-text: #8a6300;
-    --warn-bg: #fff6df;
-    --warn-border: #f0d98c;
-    --input-bg: #ffffff;
-    --code-bg: #f1f2f5;
-    --shadow: 0 1px 2px rgba(16, 24, 40, 0.05);
-  }
-  @media (prefers-color-scheme: dark) {
-    :root {
-      --bg: #14161a;
-      --card: #1c1f26;
-      --border: #2c313b;
-      --text: #e7e9ee;
-      --text-dim: #9aa1ac;
-      --text-faint: #6b7280;
-      --accent: #6c8bff;
-      --accent-hover: #8aa2ff;
-      --danger: #f57171;
-      --danger-bg: #3a1e1e;
-      --success-text: #59d68a;
-      --success-bg: #163826;
-      --warn-text: #e0b74e;
-      --warn-bg: #3a3016;
-      --warn-border: #5a4a1e;
-      --input-bg: #12141a;
-      --code-bg: #12141a;
-      --shadow: none;
-    }
-  }
-  * { box-sizing: border-box; }
-  body {
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-    background: var(--bg);
-    color: var(--text);
-    max-width: 980px;
-    margin: 0 auto;
-    padding: 2rem 1.25rem 4rem;
-    line-height: 1.45;
-  }
-  h1 { font-size: 1.5rem; margin: 0 0 0.25rem; }
-  h2 { font-size: 1.05rem; margin: 0; }
-  h3 { font-size: 0.95rem; margin: 0 0 0.6rem; }
-  .subtitle { color: var(--text-dim); font-size: 0.9rem; margin: 0 0 1.25rem; }
-  .card {
-    background: var(--card);
-    border: 1px solid var(--border);
-    border-radius: 12px;
-    padding: 1.25rem;
-    margin-bottom: 1.75rem;
-    box-shadow: var(--shadow);
-  }
-  .card-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 0.75rem;
-    margin-bottom: 1rem;
-    flex-wrap: wrap;
-  }
-  .card-header p { margin: 0.2rem 0 0; color: var(--text-dim); font-size: 0.82rem; }
-  details.card > summary { cursor: pointer; list-style: none; }
-  details.card > summary::-webkit-details-marker { display: none; }
-  details.card:not([open]) > summary.card-header { margin-bottom: 0; }
-  details.card .chevron { color: var(--text-faint); font-size: 0.85rem; transition: transform 0.15s ease; flex-shrink: 0; }
-  details.card[open] .chevron { transform: rotate(90deg); }
-  table { width: 100%; border-collapse: collapse; font-size: 0.87rem; }
-  th, td { text-align: left; padding: 0.55rem 0.5rem; border-bottom: 1px solid var(--border); }
-  th { color: var(--text-dim); font-weight: 600; font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.02em; }
-  tbody tr:hover { background: color-mix(in srgb, var(--accent) 5%, transparent); }
-  .table-wrap { overflow-x: auto; }
-  code, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.85em; }
-  form.grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0.85rem; }
-  form.grid label { display: flex; flex-direction: column; font-size: 0.82rem; gap: 0.3rem; color: var(--text-dim); }
-  form.grid label .hint { font-size: 0.75rem; color: var(--text-faint); font-weight: 400; }
-  form.grid .full { grid-column: 1 / -1; }
-  form.grid .row { display: flex; gap: 0.5rem; align-items: stretch; }
-  input, select {
-    padding: 0.5rem 0.6rem;
-    font-size: 0.88rem;
-    border: 1px solid var(--border);
-    border-radius: 7px;
-    background: var(--input-bg);
-    color: var(--text);
-    width: 100%;
-    font-family: inherit;
-  }
-  input:focus, select:focus { outline: 2px solid color-mix(in srgb, var(--accent) 50%, transparent); outline-offset: 1px; border-color: var(--accent); }
-  input[type="checkbox"] { width: auto; }
-  label.checkbox-row { flex-direction: row !important; align-items: center; gap: 0.5rem !important; }
-  button {
-    cursor: pointer;
-    padding: 0.5rem 0.9rem;
-    font-size: 0.85rem;
-    border-radius: 7px;
-    border: 1px solid var(--border);
-    background: var(--card);
-    color: var(--text);
-    font-family: inherit;
-    white-space: nowrap;
-  }
-  button:hover { border-color: var(--accent); color: var(--accent); }
-  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
-  button.primary:hover { background: var(--accent-hover); border-color: var(--accent-hover); color: #fff; }
-  /* .edit/.danger carry their color at rest, not just on hover — an edit or
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>cli-wrapper settings</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        --bg: #f6f7f9;
+        --card: #ffffff;
+        --border: #e2e5ea;
+        --text: #1a1d23;
+        --text-dim: #6b7280;
+        --text-faint: #9aa1ac;
+        --accent: #3457d5;
+        --accent-hover: #2743ad;
+        --danger: #b91c1c;
+        --danger-bg: #fdecec;
+        --success-text: #157a3d;
+        --success-bg: #e6f7ec;
+        --warn-text: #8a6300;
+        --warn-bg: #fff6df;
+        --warn-border: #f0d98c;
+        --input-bg: #ffffff;
+        --code-bg: #f1f2f5;
+        --shadow: 0 1px 2px rgba(16, 24, 40, 0.05);
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #14161a;
+          --card: #1c1f26;
+          --border: #2c313b;
+          --text: #e7e9ee;
+          --text-dim: #9aa1ac;
+          --text-faint: #6b7280;
+          --accent: #6c8bff;
+          --accent-hover: #8aa2ff;
+          --danger: #f57171;
+          --danger-bg: #3a1e1e;
+          --success-text: #59d68a;
+          --success-bg: #163826;
+          --warn-text: #e0b74e;
+          --warn-bg: #3a3016;
+          --warn-border: #5a4a1e;
+          --input-bg: #12141a;
+          --code-bg: #12141a;
+          --shadow: none;
+        }
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        font-family:
+          -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica,
+          Arial, sans-serif;
+        background: var(--bg);
+        color: var(--text);
+        max-width: 980px;
+        margin: 0 auto;
+        padding: 2rem 1.25rem 4rem;
+        line-height: 1.45;
+      }
+      h1 {
+        font-size: 1.5rem;
+        margin: 0 0 0.25rem;
+      }
+      h2 {
+        font-size: 1.05rem;
+        margin: 0;
+      }
+      h3 {
+        font-size: 0.95rem;
+        margin: 0 0 0.6rem;
+      }
+      .subtitle {
+        color: var(--text-dim);
+        font-size: 0.9rem;
+        margin: 0 0 1.25rem;
+      }
+      .card {
+        background: var(--card);
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        padding: 1.25rem;
+        margin-bottom: 1.75rem;
+        box-shadow: var(--shadow);
+      }
+      .card-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 0.75rem;
+        margin-bottom: 1rem;
+        flex-wrap: wrap;
+      }
+      .card-header p {
+        margin: 0.2rem 0 0;
+        color: var(--text-dim);
+        font-size: 0.82rem;
+      }
+      details.card > summary {
+        cursor: pointer;
+        list-style: none;
+      }
+      details.card > summary::-webkit-details-marker {
+        display: none;
+      }
+      details.card:not([open]) > summary.card-header {
+        margin-bottom: 0;
+      }
+      details.card .chevron {
+        color: var(--text-faint);
+        font-size: 0.85rem;
+        transition: transform 0.15s ease;
+        flex-shrink: 0;
+      }
+      details.card[open] .chevron {
+        transform: rotate(90deg);
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 0.87rem;
+      }
+      th,
+      td {
+        text-align: left;
+        padding: 0.55rem 0.5rem;
+        border-bottom: 1px solid var(--border);
+      }
+      th {
+        color: var(--text-dim);
+        font-weight: 600;
+        font-size: 0.78rem;
+        text-transform: uppercase;
+        letter-spacing: 0.02em;
+      }
+      tbody tr:hover {
+        background: color-mix(in srgb, var(--accent) 5%, transparent);
+      }
+      .table-wrap {
+        overflow-x: auto;
+      }
+      code,
+      .mono {
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        font-size: 0.85em;
+      }
+      form.grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 0.85rem;
+      }
+      form.grid label {
+        display: flex;
+        flex-direction: column;
+        font-size: 0.82rem;
+        gap: 0.3rem;
+        color: var(--text-dim);
+      }
+      form.grid label .hint {
+        font-size: 0.75rem;
+        color: var(--text-faint);
+        font-weight: 400;
+      }
+      form.grid .full {
+        grid-column: 1 / -1;
+      }
+      form.grid .row {
+        display: flex;
+        gap: 0.5rem;
+        align-items: stretch;
+      }
+      input,
+      select {
+        padding: 0.5rem 0.6rem;
+        font-size: 0.88rem;
+        border: 1px solid var(--border);
+        border-radius: 7px;
+        background: var(--input-bg);
+        color: var(--text);
+        width: 100%;
+        font-family: inherit;
+      }
+      input:focus,
+      select:focus {
+        outline: 2px solid color-mix(in srgb, var(--accent) 50%, transparent);
+        outline-offset: 1px;
+        border-color: var(--accent);
+      }
+      input[type="checkbox"] {
+        width: auto;
+      }
+      label.checkbox-row {
+        flex-direction: row !important;
+        align-items: center;
+        gap: 0.5rem !important;
+      }
+      button {
+        cursor: pointer;
+        padding: 0.5rem 0.9rem;
+        font-size: 0.85rem;
+        border-radius: 7px;
+        border: 1px solid var(--border);
+        background: var(--card);
+        color: var(--text);
+        font-family: inherit;
+        white-space: nowrap;
+      }
+      button:hover {
+        border-color: var(--accent);
+        color: var(--accent);
+      }
+      button.primary {
+        background: var(--accent);
+        border-color: var(--accent);
+        color: #fff;
+      }
+      button.primary:hover {
+        background: var(--accent-hover);
+        border-color: var(--accent-hover);
+        color: #fff;
+      }
+      /* .edit/.danger carry their color at rest, not just on hover — an edit or
      delete action should read as such at a glance in the table, not only
      once you're already hovering it. Hover then commits to a solid fill,
      same "outline -> filled" pattern button.primary already uses. */
-  button.edit { border-color: color-mix(in srgb, var(--accent) 45%, var(--border)); color: var(--accent); }
-  button.edit:hover { background: var(--accent); border-color: var(--accent); color: #fff; }
-  button.danger { border-color: color-mix(in srgb, var(--danger) 45%, var(--border)); color: var(--danger); }
-  button.danger:hover { background: var(--danger); border-color: var(--danger); color: #fff; }
-  button:disabled { opacity: 0.5; cursor: default; }
-  button:disabled:hover { border-color: var(--border); color: var(--text); background: var(--card); }
-  .actions { display: flex; gap: 0.5rem; flex-wrap: wrap; }
-  .row-actions { display: flex; gap: 0.4rem; }
-  .row-actions button { padding: 0.3rem 0.6rem; font-size: 0.78rem; }
-  #status, #settings-status { min-height: 1.1rem; font-size: 0.82rem; color: var(--danger); margin: 0 0 0.75rem; }
-  .status-ok { color: var(--success-text) !important; }
-  .log-controls { display: flex; align-items: center; gap: 0.9rem; font-size: 0.82rem; color: var(--text-dim); flex-wrap: wrap; }
-  .log-controls label { display: flex; align-items: center; gap: 0.35rem; }
-  td.error-cell { max-width: 280px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--danger); cursor: help; font-size: 0.82rem; }
-  .badge { display: inline-block; padding: 0.15rem 0.55rem; border-radius: 999px; font-size: 0.72rem; font-weight: 600; }
-  .badge-success { background: var(--success-bg); color: var(--success-text); }
-  .badge-error { background: var(--danger-bg); color: var(--danger); }
-  .badge-timeout { background: var(--warn-bg); color: var(--warn-text); }
-  #logs-empty { font-size: 0.85rem; color: var(--text-faint); padding: 0.5rem 0; }
-  .notes { font-size: 0.78rem; color: var(--text-faint); margin: -0.4rem 0 0.9rem; }
-  dialog#log-dialog {
-    width: 90%; max-width: 720px; border: 1px solid var(--border); border-radius: 12px;
-    padding: 1.25rem; background: var(--card); color: var(--text);
-  }
-  dialog#log-dialog::backdrop { background: rgba(0,0,0,0.45); }
-  dialog#log-dialog h3 { margin-top: 0; }
-  dialog#log-dialog h4 { margin: 0.9rem 0 0.3rem; font-size: 0.8rem; color: var(--text-dim); }
-  dialog#log-dialog pre {
-    white-space: pre-wrap; word-break: break-word; max-height: 240px; overflow: auto;
-    background: var(--code-bg); padding: 0.6rem; border-radius: 6px; font-size: 0.82rem; margin: 0;
-  }
-  #log-dialog-meta { font-size: 0.8rem; color: var(--text-dim); margin-bottom: 0.5rem; }
-  #log-dialog-error-block { display: none; }
-  #log-dialog-error-block pre { background: var(--danger-bg); color: var(--danger); }
-  .copy-row { display: flex; gap: 0.5rem; }
-  .copy-row input { flex: 1; }
-  .copy-row button { flex-shrink: 0; }
-  footer { text-align: center; font-size: 0.75rem; color: var(--text-faint); margin-top: 2.5rem; }
-</style>
-</head>
-<body>
+      button.edit {
+        border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
+        color: var(--accent);
+      }
+      button.edit:hover {
+        background: var(--accent);
+        border-color: var(--accent);
+        color: #fff;
+      }
+      button.danger {
+        border-color: color-mix(in srgb, var(--danger) 45%, var(--border));
+        color: var(--danger);
+      }
+      button.danger:hover {
+        background: var(--danger);
+        border-color: var(--danger);
+        color: #fff;
+      }
+      button:disabled {
+        opacity: 0.5;
+        cursor: default;
+      }
+      button:disabled:hover {
+        border-color: var(--border);
+        color: var(--text);
+        background: var(--card);
+      }
+      .actions {
+        display: flex;
+        gap: 0.5rem;
+        flex-wrap: wrap;
+      }
+      .row-actions {
+        display: flex;
+        gap: 0.4rem;
+      }
+      .row-actions button {
+        padding: 0.3rem 0.6rem;
+        font-size: 0.78rem;
+      }
+      #status,
+      #settings-status {
+        min-height: 1.1rem;
+        font-size: 0.82rem;
+        color: var(--danger);
+        margin: 0 0 0.75rem;
+      }
+      .status-ok {
+        color: var(--success-text) !important;
+      }
+      .log-controls {
+        display: flex;
+        align-items: center;
+        gap: 0.9rem;
+        font-size: 0.82rem;
+        color: var(--text-dim);
+        flex-wrap: wrap;
+      }
+      .log-controls label {
+        display: flex;
+        align-items: center;
+        gap: 0.35rem;
+      }
+      td.error-cell {
+        max-width: 280px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        color: var(--danger);
+        cursor: help;
+        font-size: 0.82rem;
+      }
+      .badge {
+        display: inline-block;
+        padding: 0.15rem 0.55rem;
+        border-radius: 999px;
+        font-size: 0.72rem;
+        font-weight: 600;
+      }
+      .badge-success {
+        background: var(--success-bg);
+        color: var(--success-text);
+      }
+      .badge-error {
+        background: var(--danger-bg);
+        color: var(--danger);
+      }
+      .badge-timeout {
+        background: var(--warn-bg);
+        color: var(--warn-text);
+      }
+      #logs-empty {
+        font-size: 0.85rem;
+        color: var(--text-faint);
+        padding: 0.5rem 0;
+      }
+      .notes {
+        font-size: 0.78rem;
+        color: var(--text-faint);
+        margin: -0.4rem 0 0.9rem;
+      }
+      dialog#log-dialog {
+        width: 90%;
+        max-width: 720px;
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        padding: 1.25rem;
+        background: var(--card);
+        color: var(--text);
+      }
+      dialog#log-dialog::backdrop {
+        background: rgba(0, 0, 0, 0.45);
+      }
+      dialog#log-dialog h3 {
+        margin-top: 0;
+      }
+      dialog#log-dialog h4 {
+        margin: 0.9rem 0 0.3rem;
+        font-size: 0.8rem;
+        color: var(--text-dim);
+      }
+      dialog#log-dialog pre {
+        white-space: pre-wrap;
+        word-break: break-word;
+        max-height: 240px;
+        overflow: auto;
+        background: var(--code-bg);
+        padding: 0.6rem;
+        border-radius: 6px;
+        font-size: 0.82rem;
+        margin: 0;
+      }
+      #log-dialog-meta {
+        font-size: 0.8rem;
+        color: var(--text-dim);
+        margin-bottom: 0.5rem;
+      }
+      #log-dialog-error-block {
+        display: none;
+      }
+      #log-dialog-error-block pre {
+        background: var(--danger-bg);
+        color: var(--danger);
+      }
+      .copy-row {
+        display: flex;
+        gap: 0.5rem;
+      }
+      .copy-row input {
+        flex: 1;
+      }
+      .copy-row button {
+        flex-shrink: 0;
+      }
+      footer {
+        text-align: center;
+        font-size: 0.75rem;
+        color: var(--text-faint);
+        margin-top: 2.5rem;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>cli-wrapper settings</h1>
+    <p class="subtitle">
+      Model routing, server configuration, and recent activity.
+    </p>
 
-<h1>cli-wrapper settings</h1>
-<p class="subtitle">Model routing, server configuration, and recent activity.</p>
-
-<div class="card">
-  <div class="card-header">
-    <div>
-      <h2>Server settings</h2>
-      <p>Applies immediately on the next API request — except <strong>port</strong>, which needs a restart.</p>
-    </div>
-  </div>
-  <p id="settings-status"></p>
-  <form class="grid" id="settings-form">
-    <label class="full"><span>API base URL <span class="hint">(use as the OpenAI client's base URL / api_base)</span></span>
-      <div class="copy-row">
-        <input type="text" id="api-host-input" class="mono" readonly />
-        <button type="button" id="copy-host-btn">Copy</button>
+    <div class="card">
+      <div class="card-header">
+        <div>
+          <h2>Server settings</h2>
+          <p>
+            Applies immediately on the next API request — except
+            <strong>API port</strong>, which needs a restart. This settings page
+            itself listens on a separate port (env <code>SETTINGS_PORT</code>,
+            not editable here).
+          </p>
+        </div>
       </div>
-    </label>
-    <label class="full"><span>API key (used for <code>Authorization: Bearer …</code> on /v1/*; blank disables auth on /v1 too)</span>
-      <div class="copy-row">
-        <input type="text" name="apiKey" class="mono" placeholder="(none — /v1 is open)" />
-        <button type="button" id="copy-key-btn">Copy</button>
-        <button type="button" id="regen-key-btn">Regenerate</button>
+      <p id="settings-status"></p>
+      <form class="grid" id="settings-form">
+        <label class="full"
+          ><span
+            >API base URL
+            <span class="hint"
+              >(use as the OpenAI client's base URL / api_base)</span
+            ></span
+          >
+          <div class="copy-row">
+            <input type="text" id="api-host-input" class="mono" readonly />
+            <button type="button" id="copy-host-btn">Copy</button>
+          </div>
+        </label>
+        <label class="full"
+          ><span
+            >API key (used for <code>Authorization: Bearer …</code> on /v1/*;
+            blank disables auth on /v1 too)</span
+          >
+          <div class="copy-row">
+            <input
+              type="text"
+              name="apiKey"
+              class="mono"
+              placeholder="(none — /v1 is open)"
+            />
+            <button type="button" id="copy-key-btn">Copy</button>
+            <button type="button" id="regen-key-btn">Regenerate</button>
+          </div>
+        </label>
+        <label
+          ><span
+            >OpenAI API port <span class="hint">(requires restart)</span></span
+          >
+          <input type="number" name="apiPort" min="1" max="65535" required />
+        </label>
+        <label
+          ><span>CLI timeout (seconds)</span>
+          <input type="number" name="cliTimeoutSec" min="1" step="1" required />
+        </label>
+        <label class="full"
+          ><span>CLI working directory</span>
+          <input type="text" name="cliWorkdir" class="mono" required />
+        </label>
+        <label class="full"
+          ><span
+            >Log file path
+            <span class="hint"
+              >(blank = in-memory only, cleared on restart)</span
+            ></span
+          >
+          <input
+            type="text"
+            name="logFilePath"
+            class="mono"
+            placeholder="e.g. ./activity-log.json"
+          />
+        </label>
+        <label class="checkbox-row full">
+          <input type="checkbox" name="logCaptureContent" />
+          Store full prompt/response text in the activity log (off = metadata
+          only: model, status, duration, tokens)
+        </label>
+        <div class="full actions">
+          <button type="submit" class="primary">Save settings</button>
+        </div>
+      </form>
+    </div>
+
+    <details class="card">
+      <summary class="card-header">
+        <div><h2>Model routing</h2></div>
+        <span class="chevron" aria-hidden="true">▸</span>
+      </summary>
+      <p id="status"></p>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>id</th>
+              <th>provider</th>
+              <th>cliModel</th>
+              <th>extraFlags</th>
+              <th>reasoning effort</th>
+              <th>override?</th>
+              <th>web search</th>
+              <th>description</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody id="rows"></tbody>
+        </table>
       </div>
-    </label>
-    <label><span>Port <span class="hint">(requires restart)</span></span>
-      <input type="number" name="port" min="1" max="65535" required />
-    </label>
-    <label><span>CLI timeout (ms)</span>
-      <input type="number" name="cliTimeoutMs" min="1000" step="1000" required />
-    </label>
-    <label class="full"><span>CLI working directory</span>
-      <input type="text" name="cliWorkdir" class="mono" required />
-    </label>
-    <label class="full"><span>Log file path <span class="hint">(blank = in-memory only, cleared on restart)</span></span>
-      <input type="text" name="logFilePath" class="mono" placeholder="e.g. ./activity-log.json" />
-    </label>
-    <label class="checkbox-row full">
-      <input type="checkbox" name="logCaptureContent" />
-      Store full prompt/response text in the activity log (off = metadata only: model, status, duration, tokens)
-    </label>
-    <div class="full actions">
-      <button type="submit" class="primary">Save settings</button>
+
+      <h3 id="form-title" style="margin-top: 1.25rem">Add model mapping</h3>
+      <form class="grid" id="form">
+        <label class="full"
+          >id
+          <input type="text" name="id" required />
+        </label>
+        <label
+          >provider
+          <select name="provider">
+            <option value="claude">claude</option>
+            <option value="codex">codex</option>
+          </select>
+        </label>
+        <label
+          >cliModel
+          <input type="text" name="cliModel" required />
+        </label>
+        <label class="full"
+          >extraFlags (comma-separated)
+          <input type="text" name="extraFlags" />
+        </label>
+        <label
+          ><span
+            >Default reasoning effort
+            <span class="hint"
+              >(blank = provider default, no extra thinking; options depend on
+              provider)</span
+            ></span
+          >
+          <select name="reasoningEffort"></select>
+        </label>
+        <label class="checkbox-row full"
+          ><input type="checkbox" name="allowReasoningEffortOverride" /> Allow
+          per-request override
+          <span class="hint"
+            >(client's <code>reasoning_effort</code> field)</span
+          >
+        </label>
+        <label class="checkbox-row full"
+          ><input type="checkbox" name="enableWebSearch" /> Enable web search
+          <span class="hint"
+            >(grants the CLI's built-in web search tool — both providers)</span
+          >
+        </label>
+        <label class="full"
+          >description
+          <input type="text" name="description" />
+        </label>
+        <div class="full actions">
+          <button type="submit" class="primary" id="submit-btn">Add</button>
+          <button type="button" id="cancel-btn" style="display: none">
+            Cancel edit
+          </button>
+        </div>
+      </form>
+    </details>
+
+    <div class="card">
+      <div class="card-header">
+        <div><h2>Recent activity</h2></div>
+        <div class="log-controls">
+          <label
+            ><input type="checkbox" id="auto-refresh" checked />
+            Auto-refresh</label
+          >
+          <button type="button" id="logs-refresh-btn">Refresh</button>
+          <button type="button" class="danger" id="logs-clear-btn">
+            Clear
+          </button>
+        </div>
+      </div>
+      <p class="notes">
+        Last 200 requests.
+        <span id="persistence-note"></span>
+        <span id="content-capture-note"></span>
+      </p>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>time</th>
+              <th>model</th>
+              <th>provider</th>
+              <th>stream</th>
+              <th>status</th>
+              <th>duration</th>
+              <th>tokens</th>
+              <th>error</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody id="log-rows"></tbody>
+        </table>
+      </div>
+      <p id="logs-empty" style="display: none">No requests logged yet.</p>
     </div>
-  </form>
-</div>
 
-<details class="card">
-  <summary class="card-header">
-    <div><h2>Model routing</h2></div>
-    <span class="chevron" aria-hidden="true">▸</span>
-  </summary>
-  <p id="status"></p>
-  <div class="table-wrap">
-    <table>
-      <thead>
-        <tr><th>id</th><th>provider</th><th>cliModel</th><th>extraFlags</th><th>reasoning effort</th><th>override?</th><th>web search</th><th>description</th><th></th></tr>
-      </thead>
-      <tbody id="rows"></tbody>
-    </table>
-  </div>
+    <footer>cli-wrapper</footer>
 
-  <h3 id="form-title" style="margin-top:1.25rem;">Add model mapping</h3>
-  <form class="grid" id="form">
-    <label class="full">id
-      <input type="text" name="id" required />
-    </label>
-    <label>provider
-      <select name="provider">
-        <option value="claude">claude</option>
-        <option value="codex">codex</option>
-      </select>
-    </label>
-    <label>cliModel
-      <input type="text" name="cliModel" required />
-    </label>
-    <label class="full">extraFlags (comma-separated)
-      <input type="text" name="extraFlags" />
-    </label>
-    <label><span>Default reasoning effort <span class="hint">(blank = provider default, no extra thinking; options depend on provider)</span></span>
-      <select name="reasoningEffort"></select>
-    </label>
-    <label class="checkbox-row full"><input type="checkbox" name="allowReasoningEffortOverride" />
-      Allow per-request override <span class="hint">(client's <code>reasoning_effort</code> field)</span>
-    </label>
-    <label class="checkbox-row full"><input type="checkbox" name="enableWebSearch" />
-      Enable web search <span class="hint">(grants the CLI's built-in web search tool — both providers)</span>
-    </label>
-    <label class="full">description
-      <input type="text" name="description" />
-    </label>
-    <div class="full actions">
-      <button type="submit" class="primary" id="submit-btn">Add</button>
-      <button type="button" id="cancel-btn" style="display:none">Cancel edit</button>
-    </div>
-  </form>
-</details>
+    <dialog id="log-dialog">
+      <h3 id="log-dialog-title">Request detail</h3>
+      <div id="log-dialog-meta"></div>
+      <div id="log-dialog-error-block">
+        <h4>Error</h4>
+        <pre id="log-dialog-error"></pre>
+      </div>
+      <h4>Input (sent to the CLI)</h4>
+      <pre id="log-dialog-input"></pre>
+      <h4>Output</h4>
+      <pre id="log-dialog-output"></pre>
+      <div style="text-align: right; margin-top: 0.9rem">
+        <button type="button" id="log-dialog-close">Close</button>
+      </div>
+    </dialog>
 
-<div class="card">
-  <div class="card-header">
-    <div><h2>Recent activity</h2></div>
-    <div class="log-controls">
-      <label><input type="checkbox" id="auto-refresh" checked /> Auto-refresh</label>
-      <button type="button" id="logs-refresh-btn">Refresh</button>
-      <button type="button" class="danger" id="logs-clear-btn">Clear</button>
-    </div>
-  </div>
-  <p class="notes">
-    Last 200 requests.
-    <span id="persistence-note"></span>
-    <span id="content-capture-note"></span>
-  </p>
-  <div class="table-wrap">
-    <table>
-      <thead>
-        <tr><th>time</th><th>model</th><th>provider</th><th>stream</th><th>status</th><th>duration</th><th>tokens</th><th>error</th><th></th></tr>
-      </thead>
-      <tbody id="log-rows"></tbody>
-    </table>
-  </div>
-  <p id="logs-empty" style="display:none">No requests logged yet.</p>
-</div>
+    <script>
+      // No auth token needed anywhere on this page — /settings and /api/settings/*
+      // are intentionally open (see AGENTS.md's "Settings has no auth, by design").
+      async function api(path, opts) {
+        const res = await fetch(path, {
+          ...opts,
+          headers: {
+            "Content-Type": "application/json",
+            ...(opts && opts.headers),
+          },
+        });
+        if (!res.ok) {
+          let body;
+          try {
+            body = await res.json();
+          } catch {
+            body = null;
+          }
+          throw new Error(
+            (body && body.error && body.error.message) ||
+              `Request failed: ${res.status}`,
+          );
+        }
+        if (res.status === 204) return null;
+        return res.json();
+      }
 
-<footer>cli-wrapper</footer>
+      function escapeHtml(s) {
+        return String(s).replace(
+          /[&<>"']/g,
+          (c) =>
+            ({
+              "&": "&amp;",
+              "<": "&lt;",
+              ">": "&gt;",
+              '"': "&quot;",
+              "'": "&#39;",
+            })[c],
+        );
+      }
 
-<dialog id="log-dialog">
-  <h3 id="log-dialog-title">Request detail</h3>
-  <div id="log-dialog-meta"></div>
-  <div id="log-dialog-error-block">
-    <h4>Error</h4>
-    <pre id="log-dialog-error"></pre>
-  </div>
-  <h4>Input (sent to the CLI)</h4>
-  <pre id="log-dialog-input"></pre>
-  <h4>Output</h4>
-  <pre id="log-dialog-output"></pre>
-  <div style="text-align:right;margin-top:0.9rem;">
-    <button type="button" id="log-dialog-close">Close</button>
-  </div>
-</dialog>
+      // --- Server settings ---
 
-<script>
-// No auth token needed anywhere on this page — /settings and /api/settings/*
-// are intentionally open (see AGENTS.md's "Settings has no auth, by design").
-async function api(path, opts) {
-  const res = await fetch(path, {
-    ...opts,
-    headers: { "Content-Type": "application/json", ...(opts && opts.headers) },
-  });
-  if (!res.ok) {
-    let body;
-    try { body = await res.json(); } catch { body = null; }
-    throw new Error((body && body.error && body.error.message) || `Request failed: ${res.status}`);
-  }
-  if (res.status === 204) return null;
-  return res.json();
-}
+      const settingsForm = document.getElementById("settings-form");
+      const settingsStatusEl = document.getElementById("settings-status");
+      const regenKeyBtn = document.getElementById("regen-key-btn");
+      const apiHostInput = document.getElementById("api-host-input");
+      const copyHostBtn = document.getElementById("copy-host-btn");
+      const copyKeyBtn = document.getElementById("copy-key-btn");
 
-function escapeHtml(s) {
-  return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
-}
+      // The settings page and the OpenAI API now listen on two separate ports (see
+      // AGENTS.md's "Two ports, by design"), so this can no longer be derived from
+      // the page's own origin like before — that would just be this settings
+      // port. Same hostname (both surfaces normally run on the same host), but the
+      // port comes from the loaded/saved apiPort setting instead; see
+      // fillSettingsForm, which updates this on every load and every save.
+      function updateApiHostInput(apiPort) {
+        apiHostInput.value = `${location.protocol}//${location.hostname}:${apiPort}/v1`;
+      }
 
-// --- Server settings ---
+      function setSettingsStatus(msg, ok) {
+        settingsStatusEl.textContent = msg || "";
+        settingsStatusEl.classList.toggle("status-ok", !!ok);
+      }
 
-const settingsForm = document.getElementById("settings-form");
-const settingsStatusEl = document.getElementById("settings-status");
-const regenKeyBtn = document.getElementById("regen-key-btn");
-const apiHostInput = document.getElementById("api-host-input");
-const copyHostBtn = document.getElementById("copy-host-btn");
-const copyKeyBtn = document.getElementById("copy-key-btn");
+      async function copyToClipboard(text, btn) {
+        try {
+          await navigator.clipboard.writeText(text);
+        } catch {
+          return; // clipboard access denied/unavailable (e.g. non-secure context) — fail quietly
+        }
+        const original = btn.textContent;
+        btn.textContent = "Copied!";
+        btn.disabled = true;
+        setTimeout(() => {
+          btn.textContent = original;
+          btn.disabled = false;
+        }, 1200);
+      }
 
-// Derived from the page's own origin rather than the (possibly unsaved, or
-// saved-but-not-yet-restarted) port field — this is the address the browser
-// actually used to reach this server right now, so it's always correct.
-apiHostInput.value = `${location.origin}/v1`;
+      copyHostBtn.addEventListener("click", () =>
+        copyToClipboard(apiHostInput.value, copyHostBtn),
+      );
+      copyKeyBtn.addEventListener("click", () =>
+        copyToClipboard(settingsForm.apiKey.value, copyKeyBtn),
+      );
 
-function setSettingsStatus(msg, ok) {
-  settingsStatusEl.textContent = msg || "";
-  settingsStatusEl.classList.toggle("status-ok", !!ok);
-}
+      function fillSettingsForm(s) {
+        settingsForm.apiKey.value = s.apiKey || "";
+        settingsForm.apiPort.value = s.apiPort;
+        updateApiHostInput(s.apiPort);
+        settingsForm.cliTimeoutSec.value = s.cliTimeoutMs / 1000;
+        settingsForm.cliWorkdir.value = s.cliWorkdir;
+        settingsForm.logFilePath.value = s.logFilePath || "";
+        settingsForm.logCaptureContent.checked = !!s.logCaptureContent;
+      }
 
-async function copyToClipboard(text, btn) {
-  try {
-    await navigator.clipboard.writeText(text);
-  } catch {
-    return; // clipboard access denied/unavailable (e.g. non-secure context) — fail quietly
-  }
-  const original = btn.textContent;
-  btn.textContent = "Copied!";
-  btn.disabled = true;
-  setTimeout(() => {
-    btn.textContent = original;
-    btn.disabled = false;
-  }, 1200);
-}
+      async function refreshSettings() {
+        try {
+          const s = await api("/api/settings/config");
+          fillSettingsForm(s);
+        } catch (err) {
+          setSettingsStatus(err.message);
+        }
+      }
 
-copyHostBtn.addEventListener("click", () => copyToClipboard(apiHostInput.value, copyHostBtn));
-copyKeyBtn.addEventListener("click", () => copyToClipboard(settingsForm.apiKey.value, copyKeyBtn));
+      regenKeyBtn.addEventListener("click", () => {
+        const bytes = new Uint8Array(24);
+        crypto.getRandomValues(bytes);
+        settingsForm.apiKey.value = Array.from(bytes, (b) =>
+          b.toString(16).padStart(2, "0"),
+        ).join("");
+      });
 
-function fillSettingsForm(s) {
-  settingsForm.apiKey.value = s.apiKey || "";
-  settingsForm.port.value = s.port;
-  settingsForm.cliTimeoutMs.value = s.cliTimeoutMs;
-  settingsForm.cliWorkdir.value = s.cliWorkdir;
-  settingsForm.logFilePath.value = s.logFilePath || "";
-  settingsForm.logCaptureContent.checked = !!s.logCaptureContent;
-}
+      settingsForm.addEventListener("submit", async (e) => {
+        e.preventDefault();
+        const fd = new FormData(settingsForm);
+        const payload = {
+          apiKey: fd.get("apiKey").trim(),
+          apiPort: Number(fd.get("apiPort")),
+          // The server/API still stores and validates this in ms (`cliTimeoutMs`) —
+          // only this form's display is in seconds, for readability.
+          cliTimeoutMs: Math.round(Number(fd.get("cliTimeoutSec")) * 1000),
+          cliWorkdir: fd.get("cliWorkdir").trim(),
+          logFilePath: fd.get("logFilePath").trim() || null,
+          logCaptureContent: fd.get("logCaptureContent") === "on",
+        };
+        try {
+          const updated = await api("/api/settings/config", {
+            method: "PUT",
+            body: JSON.stringify(payload),
+          });
+          fillSettingsForm(updated);
+          setSettingsStatus("Saved.", true);
+          refreshMeta();
+        } catch (err) {
+          setSettingsStatus(err.message);
+        }
+      });
 
-async function refreshSettings() {
-  try {
-    const s = await api("/api/settings/config");
-    fillSettingsForm(s);
-  } catch (err) {
-    setSettingsStatus(err.message);
-  }
-}
+      refreshSettings();
 
-regenKeyBtn.addEventListener("click", () => {
-  const bytes = new Uint8Array(24);
-  crypto.getRandomValues(bytes);
-  settingsForm.apiKey.value = Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
-});
+      // --- Model routing ---
 
-settingsForm.addEventListener("submit", async (e) => {
-  e.preventDefault();
-  const fd = new FormData(settingsForm);
-  const payload = {
-    apiKey: fd.get("apiKey").trim(),
-    port: Number(fd.get("port")),
-    cliTimeoutMs: Number(fd.get("cliTimeoutMs")),
-    cliWorkdir: fd.get("cliWorkdir").trim(),
-    logFilePath: fd.get("logFilePath").trim() || null,
-    logCaptureContent: fd.get("logCaptureContent") === "on",
-  };
-  try {
-    const updated = await api("/api/settings/config", { method: "PUT", body: JSON.stringify(payload) });
-    fillSettingsForm(updated);
-    setSettingsStatus("Saved.", true);
-    refreshMeta();
-  } catch (err) {
-    setSettingsStatus(err.message);
-  }
-});
+      const statusEl = document.getElementById("status");
+      const rowsEl = document.getElementById("rows");
+      const form = document.getElementById("form");
+      const submitBtn = document.getElementById("submit-btn");
+      const cancelBtn = document.getElementById("cancel-btn");
+      const formTitle = document.getElementById("form-title");
+      let editingId = null;
 
-refreshSettings();
+      // Neither CLI accepts all 6 REASONING_EFFORT_VALUES from types/config.ts —
+      // claude's --effort has no "minimal", codex's -c model_reasoning_effort= has
+      // neither "xhigh" nor "max" (see AGENTS.md's "Reasoning effort control and
+      // content"). The server still accepts any of the 6 for either provider
+      // (typo protection only, not provider-correctness — same as cliModel), so
+      // this is just the dropdown showing sensible options per provider, not a
+      // hard client-side restriction.
+      const REASONING_EFFORT_BY_PROVIDER = {
+        claude: ["low", "medium", "high", "xhigh", "max"],
+        codex: ["minimal", "low", "medium", "high"],
+      };
 
-// --- Model routing ---
+      /**
+       * Rebuilds the reasoningEffort <select>'s options for the currently-chosen
+       * provider. `keepValue` defaults to the select's current value (used when
+       * the user actively switches providers — an old value that isn't valid for
+       * the new provider is correctly dropped, not carried over). Pass
+       * `allowExtra: true` only when populating the form from an already-saved
+       * mapping, so a value that's off-list for its own provider (the server
+       * accepts any of the 6 for either provider — see this constant's comment
+       * above) is kept as an extra option instead of silently vanishing the
+       * moment you open that mapping for edit and save again untouched.
+       */
+      function populateReasoningEffortOptions(keepValue, allowExtra) {
+        const select = form.reasoningEffort;
+        const previous = keepValue !== undefined ? keepValue : select.value;
+        const values = REASONING_EFFORT_BY_PROVIDER[form.provider.value] || [];
+        const allValues =
+          allowExtra && previous && !values.includes(previous)
+            ? [...values, previous]
+            : values;
+        select.innerHTML =
+          `<option value="">(none)</option>` +
+          allValues.map((v) => `<option value="${v}">${v}</option>`).join("");
+        select.value = previous && allValues.includes(previous) ? previous : "";
+      }
 
-const statusEl = document.getElementById("status");
-const rowsEl = document.getElementById("rows");
-const form = document.getElementById("form");
-const submitBtn = document.getElementById("submit-btn");
-const cancelBtn = document.getElementById("cancel-btn");
-const formTitle = document.getElementById("form-title");
-let editingId = null;
+      form.provider.addEventListener("change", () =>
+        populateReasoningEffortOptions(),
+      );
+      populateReasoningEffortOptions();
 
-// Neither CLI accepts all 6 REASONING_EFFORT_VALUES from types/config.ts —
-// claude's --effort has no "minimal", codex's -c model_reasoning_effort= has
-// neither "xhigh" nor "max" (see AGENTS.md's "Reasoning effort control and
-// content"). The server still accepts any of the 6 for either provider
-// (typo protection only, not provider-correctness — same as cliModel), so
-// this is just the dropdown showing sensible options per provider, not a
-// hard client-side restriction.
-const REASONING_EFFORT_BY_PROVIDER = {
-  claude: ["low", "medium", "high", "xhigh", "max"],
-  codex: ["minimal", "low", "medium", "high"],
-};
+      function setStatus(msg) {
+        statusEl.textContent = msg || "";
+      }
 
-/**
- * Rebuilds the reasoningEffort <select>'s options for the currently-chosen
- * provider. `keepValue` defaults to the select's current value (used when
- * the user actively switches providers — an old value that isn't valid for
- * the new provider is correctly dropped, not carried over). Pass
- * `allowExtra: true` only when populating the form from an already-saved
- * mapping, so a value that's off-list for its own provider (the server
- * accepts any of the 6 for either provider — see this constant's comment
- * above) is kept as an extra option instead of silently vanishing the
- * moment you open that mapping for edit and save again untouched.
- */
-function populateReasoningEffortOptions(keepValue, allowExtra) {
-  const select = form.reasoningEffort;
-  const previous = keepValue !== undefined ? keepValue : select.value;
-  const values = REASONING_EFFORT_BY_PROVIDER[form.provider.value] || [];
-  const allValues = allowExtra && previous && !values.includes(previous) ? [...values, previous] : values;
-  select.innerHTML = `<option value="">(none)</option>` + allValues.map((v) => `<option value="${v}">${v}</option>`).join("");
-  select.value = previous && allValues.includes(previous) ? previous : "";
-}
-
-form.provider.addEventListener("change", () => populateReasoningEffortOptions());
-populateReasoningEffortOptions();
-
-function setStatus(msg) { statusEl.textContent = msg || ""; }
-
-function renderRows(models) {
-  rowsEl.innerHTML = "";
-  for (const m of models) {
-    const tr = document.createElement("tr");
-    tr.innerHTML = `
+      function renderRows(models) {
+        rowsEl.innerHTML = "";
+        for (const m of models) {
+          const tr = document.createElement("tr");
+          tr.innerHTML = `
       <td class="mono">${escapeHtml(m.id)}</td>
       <td>${escapeHtml(m.provider)}</td>
       <td class="mono">${escapeHtml(m.cliModel)}</td>
@@ -479,127 +832,148 @@ function renderRows(models) {
         <button class="danger" data-delete="${encodeURIComponent(m.id)}">🗑️ Delete</button>
       </td>
     `;
-    rowsEl.appendChild(tr);
-  }
-}
+          rowsEl.appendChild(tr);
+        }
+      }
 
-let cachedModels = [];
+      let cachedModels = [];
 
-async function refresh() {
-  try {
-    cachedModels = await api("/api/settings/models");
-    renderRows(cachedModels);
-    setStatus("");
-  } catch (err) {
-    setStatus(err.message);
-  }
-}
+      async function refresh() {
+        try {
+          cachedModels = await api("/api/settings/models");
+          renderRows(cachedModels);
+          setStatus("");
+        } catch (err) {
+          setStatus(err.message);
+        }
+      }
 
-function resetForm() {
-  form.reset();
-  populateReasoningEffortOptions();
-  editingId = null;
-  submitBtn.textContent = "Add";
-  formTitle.textContent = "Add model mapping";
-  cancelBtn.style.display = "none";
-}
+      function resetForm() {
+        form.reset();
+        populateReasoningEffortOptions();
+        editingId = null;
+        submitBtn.textContent = "Add";
+        formTitle.textContent = "Add model mapping";
+        cancelBtn.style.display = "none";
+      }
 
-form.addEventListener("submit", async (e) => {
-  e.preventDefault();
-  const fd = new FormData(form);
-  const payload = {
-    id: fd.get("id").trim(),
-    provider: fd.get("provider"),
-    cliModel: fd.get("cliModel").trim(),
-    extraFlags: fd.get("extraFlags").trim() ? fd.get("extraFlags").split(",").map((s) => s.trim()).filter(Boolean) : undefined,
-    reasoningEffort: fd.get("reasoningEffort") || undefined,
-    allowReasoningEffortOverride: fd.get("allowReasoningEffortOverride") === "on",
-    enableWebSearch: fd.get("enableWebSearch") === "on",
-    description: fd.get("description").trim() || undefined,
-  };
-  try {
-    if (editingId) {
-      await api(`/api/settings/models/${encodeURIComponent(editingId)}`, { method: "PUT", body: JSON.stringify(payload) });
-    } else {
-      await api("/api/settings/models", { method: "POST", body: JSON.stringify(payload) });
-    }
-    resetForm();
-    await refresh();
-  } catch (err) {
-    setStatus(err.message);
-  }
-});
+      form.addEventListener("submit", async (e) => {
+        e.preventDefault();
+        const fd = new FormData(form);
+        const payload = {
+          id: fd.get("id").trim(),
+          provider: fd.get("provider"),
+          cliModel: fd.get("cliModel").trim(),
+          extraFlags: fd.get("extraFlags").trim()
+            ? fd
+                .get("extraFlags")
+                .split(",")
+                .map((s) => s.trim())
+                .filter(Boolean)
+            : undefined,
+          reasoningEffort: fd.get("reasoningEffort") || undefined,
+          allowReasoningEffortOverride:
+            fd.get("allowReasoningEffortOverride") === "on",
+          enableWebSearch: fd.get("enableWebSearch") === "on",
+          description: fd.get("description").trim() || undefined,
+        };
+        try {
+          if (editingId) {
+            await api(`/api/settings/models/${encodeURIComponent(editingId)}`, {
+              method: "PUT",
+              body: JSON.stringify(payload),
+            });
+          } else {
+            await api("/api/settings/models", {
+              method: "POST",
+              body: JSON.stringify(payload),
+            });
+          }
+          resetForm();
+          await refresh();
+        } catch (err) {
+          setStatus(err.message);
+        }
+      });
 
-cancelBtn.addEventListener("click", resetForm);
+      cancelBtn.addEventListener("click", resetForm);
 
-rowsEl.addEventListener("click", async (e) => {
-  const editId = e.target.getAttribute("data-edit");
-  const deleteId = e.target.getAttribute("data-delete");
-  if (editId) {
-    const id = decodeURIComponent(editId);
-    const m = cachedModels.find((x) => x.id === id);
-    if (!m) return;
-    editingId = id;
-    form.id.value = m.id;
-    form.provider.value = m.provider;
-    form.cliModel.value = m.cliModel;
-    form.extraFlags.value = (m.extraFlags || []).join(", ");
-    populateReasoningEffortOptions(m.reasoningEffort || "", true);
-    form.allowReasoningEffortOverride.checked = !!m.allowReasoningEffortOverride;
-    form.enableWebSearch.checked = !!m.enableWebSearch;
-    form.description.value = m.description || "";
-    submitBtn.textContent = "Save";
-    formTitle.textContent = `Edit "${id}"`;
-    cancelBtn.style.display = "inline-block";
-  } else if (deleteId) {
-    const id = decodeURIComponent(deleteId);
-    if (!confirm(`Delete model mapping "${id}"?`)) return;
-    try {
-      await api(`/api/settings/models/${encodeURIComponent(id)}`, { method: "DELETE" });
-      await refresh();
-    } catch (err) {
-      setStatus(err.message);
-    }
-  }
-});
+      rowsEl.addEventListener("click", async (e) => {
+        const editId = e.target.getAttribute("data-edit");
+        const deleteId = e.target.getAttribute("data-delete");
+        if (editId) {
+          const id = decodeURIComponent(editId);
+          const m = cachedModels.find((x) => x.id === id);
+          if (!m) return;
+          editingId = id;
+          form.id.value = m.id;
+          form.provider.value = m.provider;
+          form.cliModel.value = m.cliModel;
+          form.extraFlags.value = (m.extraFlags || []).join(", ");
+          populateReasoningEffortOptions(m.reasoningEffort || "", true);
+          form.allowReasoningEffortOverride.checked =
+            !!m.allowReasoningEffortOverride;
+          form.enableWebSearch.checked = !!m.enableWebSearch;
+          form.description.value = m.description || "";
+          submitBtn.textContent = "Save";
+          formTitle.textContent = `Edit "${id}"`;
+          cancelBtn.style.display = "inline-block";
+        } else if (deleteId) {
+          const id = decodeURIComponent(deleteId);
+          if (!confirm(`Delete model mapping "${id}"?`)) return;
+          try {
+            await api(`/api/settings/models/${encodeURIComponent(id)}`, {
+              method: "DELETE",
+            });
+            await refresh();
+          } catch (err) {
+            setStatus(err.message);
+          }
+        }
+      });
 
-refresh();
+      refresh();
 
-// --- Recent activity (event/log viewer) ---
+      // --- Recent activity (event/log viewer) ---
 
-const logRowsEl = document.getElementById("log-rows");
-const logsEmptyEl = document.getElementById("logs-empty");
-const autoRefreshEl = document.getElementById("auto-refresh");
-const logsRefreshBtn = document.getElementById("logs-refresh-btn");
-const logsClearBtn = document.getElementById("logs-clear-btn");
+      const logRowsEl = document.getElementById("log-rows");
+      const logsEmptyEl = document.getElementById("logs-empty");
+      const autoRefreshEl = document.getElementById("auto-refresh");
+      const logsRefreshBtn = document.getElementById("logs-refresh-btn");
+      const logsClearBtn = document.getElementById("logs-clear-btn");
 
-function fmtTime(ms) {
-  return new Date(ms).toLocaleTimeString();
-}
+      function fmtTime(ms) {
+        return new Date(ms).toLocaleTimeString();
+      }
 
-function fmtDuration(ms) {
-  return ms < 1000 ? `${ms}ms` : `${(ms / 1000).toFixed(1)}s`;
-}
+      function fmtDuration(ms) {
+        return ms < 1000 ? `${ms}ms` : `${(ms / 1000).toFixed(1)}s`;
+      }
 
-function fmtTokens(usage) {
-  if (!usage) return "";
-  return `${usage.promptTokens}→${usage.completionTokens} (${usage.totalTokens})`;
-}
+      function fmtTokens(usage) {
+        if (!usage) return "";
+        return `${usage.promptTokens}→${usage.completionTokens} (${usage.totalTokens})`;
+      }
 
-function badgeFor(status) {
-  const cls = status === "success" ? "badge-success" : status === "timeout" ? "badge-timeout" : "badge-error";
-  return `<span class="badge ${cls}">${escapeHtml(status)}</span>`;
-}
+      function badgeFor(status) {
+        const cls =
+          status === "success"
+            ? "badge-success"
+            : status === "timeout"
+              ? "badge-timeout"
+              : "badge-error";
+        return `<span class="badge ${cls}">${escapeHtml(status)}</span>`;
+      }
 
-let cachedLogs = [];
+      let cachedLogs = [];
 
-function renderLogs(entries) {
-  cachedLogs = entries;
-  logRowsEl.innerHTML = "";
-  logsEmptyEl.style.display = entries.length ? "none" : "block";
-  for (const e of entries) {
-    const tr = document.createElement("tr");
-    tr.innerHTML = `
+      function renderLogs(entries) {
+        cachedLogs = entries;
+        logRowsEl.innerHTML = "";
+        logsEmptyEl.style.display = entries.length ? "none" : "block";
+        for (const e of entries) {
+          const tr = document.createElement("tr");
+          tr.innerHTML = `
       <td>${escapeHtml(fmtTime(e.timestamp))}</td>
       <td class="mono">${escapeHtml(e.model)}</td>
       <td>${escapeHtml(e.provider)}</td>
@@ -610,97 +984,104 @@ function renderLogs(entries) {
       <td class="error-cell" title="${escapeHtml(e.error || "")}">${escapeHtml(e.error || "")}</td>
       <td><button data-view="${encodeURIComponent(e.id)}">View</button></td>
     `;
-    logRowsEl.appendChild(tr);
-  }
-}
+          logRowsEl.appendChild(tr);
+        }
+      }
 
-const logDialog = document.getElementById("log-dialog");
-const logDialogTitle = document.getElementById("log-dialog-title");
-const logDialogMeta = document.getElementById("log-dialog-meta");
-const logDialogInput = document.getElementById("log-dialog-input");
-const logDialogOutput = document.getElementById("log-dialog-output");
-const logDialogErrorBlock = document.getElementById("log-dialog-error-block");
-const logDialogError = document.getElementById("log-dialog-error");
-document.getElementById("log-dialog-close").addEventListener("click", () => logDialog.close());
+      const logDialog = document.getElementById("log-dialog");
+      const logDialogTitle = document.getElementById("log-dialog-title");
+      const logDialogMeta = document.getElementById("log-dialog-meta");
+      const logDialogInput = document.getElementById("log-dialog-input");
+      const logDialogOutput = document.getElementById("log-dialog-output");
+      const logDialogErrorBlock = document.getElementById(
+        "log-dialog-error-block",
+      );
+      const logDialogError = document.getElementById("log-dialog-error");
+      document
+        .getElementById("log-dialog-close")
+        .addEventListener("click", () => logDialog.close());
 
-function openLogDialog(entry) {
-  logDialogTitle.textContent = `${entry.model} — ${entry.status}`;
-  logDialogMeta.textContent =
-    `${new Date(entry.timestamp).toLocaleString()} · ${entry.provider} · ` +
-    `${entry.stream ? "streaming" : "non-streaming"} · ${fmtDuration(entry.durationMs)}` +
-    (entry.usage ? ` · ${fmtTokens(entry.usage)} tokens` : "");
-  if (entry.error) {
-    logDialogErrorBlock.style.display = "block";
-    logDialogError.textContent = entry.error;
-  } else {
-    logDialogErrorBlock.style.display = "none";
-  }
-  logDialogInput.textContent = entry.input || "(not recorded)";
-  logDialogOutput.textContent = entry.output || "(none)";
-  logDialog.showModal();
-}
+      function openLogDialog(entry) {
+        logDialogTitle.textContent = `${entry.model} — ${entry.status}`;
+        logDialogMeta.textContent =
+          `${new Date(entry.timestamp).toLocaleString()} · ${entry.provider} · ` +
+          `${entry.stream ? "streaming" : "non-streaming"} · ${fmtDuration(entry.durationMs)}` +
+          (entry.usage ? ` · ${fmtTokens(entry.usage)} tokens` : "");
+        if (entry.error) {
+          logDialogErrorBlock.style.display = "block";
+          logDialogError.textContent = entry.error;
+        } else {
+          logDialogErrorBlock.style.display = "none";
+        }
+        logDialogInput.textContent = entry.input || "(not recorded)";
+        logDialogOutput.textContent = entry.output || "(none)";
+        logDialog.showModal();
+      }
 
-logRowsEl.addEventListener("click", (e) => {
-  const viewId = e.target.getAttribute("data-view");
-  if (!viewId) return;
-  const id = decodeURIComponent(viewId);
-  const entry = cachedLogs.find((x) => x.id === id);
-  if (entry) openLogDialog(entry);
-});
+      logRowsEl.addEventListener("click", (e) => {
+        const viewId = e.target.getAttribute("data-view");
+        if (!viewId) return;
+        const id = decodeURIComponent(viewId);
+        const entry = cachedLogs.find((x) => x.id === id);
+        if (entry) openLogDialog(entry);
+      });
 
-async function refreshLogs() {
-  try {
-    const entries = await api("/api/settings/logs");
-    renderLogs(entries);
-  } catch (err) {
-    setStatus(err.message);
-  }
-}
+      async function refreshLogs() {
+        try {
+          const entries = await api("/api/settings/logs");
+          renderLogs(entries);
+        } catch (err) {
+          setStatus(err.message);
+        }
+      }
 
-logsRefreshBtn.addEventListener("click", refreshLogs);
+      logsRefreshBtn.addEventListener("click", refreshLogs);
 
-logsClearBtn.addEventListener("click", async () => {
-  if (!confirm("Clear the activity log?")) return;
-  try {
-    await api("/api/settings/logs", { method: "DELETE" });
-    await refreshLogs();
-  } catch (err) {
-    setStatus(err.message);
-  }
-});
+      logsClearBtn.addEventListener("click", async () => {
+        if (!confirm("Clear the activity log?")) return;
+        try {
+          await api("/api/settings/logs", { method: "DELETE" });
+          await refreshLogs();
+        } catch (err) {
+          setStatus(err.message);
+        }
+      });
 
-let logPollTimer = null;
-function startLogPolling() {
-  stopLogPolling();
-  logPollTimer = setInterval(refreshLogs, 4000);
-}
-function stopLogPolling() {
-  if (logPollTimer) clearInterval(logPollTimer);
-  logPollTimer = null;
-}
-autoRefreshEl.addEventListener("change", () => {
-  if (autoRefreshEl.checked) startLogPolling();
-  else stopLogPolling();
-});
+      let logPollTimer = null;
+      function startLogPolling() {
+        stopLogPolling();
+        logPollTimer = setInterval(refreshLogs, 4000);
+      }
+      function stopLogPolling() {
+        if (logPollTimer) clearInterval(logPollTimer);
+        logPollTimer = null;
+      }
+      autoRefreshEl.addEventListener("change", () => {
+        if (autoRefreshEl.checked) startLogPolling();
+        else stopLogPolling();
+      });
 
-const contentCaptureNoteEl = document.getElementById("content-capture-note");
-const persistenceNoteEl = document.getElementById("persistence-note");
-function refreshMeta() {
-  return api("/api/settings/meta")
-    .then((meta) => {
-      contentCaptureNoteEl.textContent = meta.logCaptureContent
-        ? " Full prompt/response content is captured."
-        : " Prompt/response content capture is disabled — only metadata is shown below.";
-      persistenceNoteEl.textContent = meta.logPersistence && meta.logPersistence.enabled
-        ? ` Persisted to ${meta.logPersistence.path} — survives a restart.`
-        : " In-memory only — cleared on server restart.";
-    })
-    .catch(() => {}); // non-critical; leave the notes blank on failure
-}
-refreshMeta();
+      const contentCaptureNoteEl = document.getElementById(
+        "content-capture-note",
+      );
+      const persistenceNoteEl = document.getElementById("persistence-note");
+      function refreshMeta() {
+        return api("/api/settings/meta")
+          .then((meta) => {
+            contentCaptureNoteEl.textContent = meta.logCaptureContent
+              ? " Full prompt/response content is captured."
+              : " Prompt/response content capture is disabled — only metadata is shown below.";
+            persistenceNoteEl.textContent =
+              meta.logPersistence && meta.logPersistence.enabled
+                ? ` Persisted to ${meta.logPersistence.path} — survives a restart.`
+                : " In-memory only — cleared on server restart.";
+          })
+          .catch(() => {}); // non-critical; leave the notes blank on failure
+      }
+      refreshMeta();
 
-refreshLogs();
-if (autoRefreshEl.checked) startLogPolling();
-</script>
-</body>
+      refreshLogs();
+      if (autoRefreshEl.checked) startLogPolling();
+    </script>
+  </body>
 </html>

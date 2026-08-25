@@ -5,34 +5,44 @@ import { chatRouter } from "./routes/chat.js";
 import { modelsRouter } from "./routes/models.js";
 import { settingsRouter } from "./routes/settings.js";
 
-export function buildApp(publicDir: string) {
+// Two separate express apps, bound to two separate ports by server.ts — not
+// one app with path-scoped auth like before. See AGENTS.md's "Two ports, by
+// design" section for the full rationale; short version: path-scoped auth
+// (still applied below, on /v1) only helps if every request actually goes
+// through this process's routing at all. Putting the unauthenticated
+// settings surface on its own port means it can be bound to localhost/a
+// private interface (or simply not exposed past a firewall) independent of
+// wherever the API port is reachable, so exposing the API to more of the
+// network can no longer accidentally expose settings as a side effect of
+// sharing one port.
+
+/**
+ * The OpenAI-compatible API surface: `/v1/chat/completions`, `/v1/models`.
+ * The only surface with auth (`bearerAuth`, scoped to `/v1` — see AGENTS.md's
+ * gotcha #2 for why this is `app.use(path, mw)`, not a router-internal
+ * `router.use(mw)`).
+ */
+export function buildApiApp() {
   const app = express();
   app.use(express.json({ limit: "10mb" }));
-
   app.get("/healthz", (_req, res) => res.json({ status: "ok" }));
-
-  // Auth middleware is scoped by URL path prefix here, at the app level, so
-  // Express's own routing decides which requests reach the auth check
-  // before any router-internal logic runs (see AGENTS.md's gotcha #2 —
-  // `app.use(mw, router)` would NOT achieve this: that form runs `mw` for
-  // every request reaching this mount point regardless of whether the
-  // router has a matching route).
-  //
-  // Only /v1/* is guarded. /settings and /api/settings/* are intentionally
-  // open — no token, by design (this is the "allow open settings without
-  // authentication" request) — so the settings page itself can be reached
-  // without knowing the key stored inside it. That's a real trade-off: it
-  // means the model routing, activity log (which can hold full prompt/
-  // response text, see logs.ts), and the /v1 API key itself are all
-  // readable/editable by anyone who can reach this HTTP server. Treat
-  // network access to this server as equivalent to full admin access — put
-  // it behind localhost-only binding, a private network, or a reverse
-  // proxy with its own auth if it's ever reachable beyond a trusted host.
   app.use("/v1", bearerAuth(() => getSettings().apiKey));
-
   app.use(chatRouter());
   app.use(modelsRouter());
-  app.use(settingsRouter(publicDir));
+  return app;
+}
 
+/**
+ * The settings surface: `/settings`, `/api/settings/*`. No auth on any route
+ * here, by design — see AGENTS.md's "Settings has no auth, by design". This
+ * means the model routing, activity log, and the `/v1` API key itself are
+ * all readable/editable by anyone who can reach *this* port — treat network
+ * access to it as equivalent to full admin access.
+ */
+export function buildSettingsApp(publicDir: string) {
+  const app = express();
+  app.use(express.json({ limit: "10mb" }));
+  app.get("/healthz", (_req, res) => res.json({ status: "ok" }));
+  app.use(settingsRouter(publicDir));
   return app;
 }

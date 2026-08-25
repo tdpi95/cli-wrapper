@@ -9,7 +9,8 @@ host — no separate API key to provision for the model calls themselves.
   `/v1/models`, backed by a routing table you define (`config.json`'s `models`).
 - **Live, no-restart settings page** at `/settings` — model routing, API key, timeout,
   working directory, and activity log, all editable without touching env vars or restarting
-  (open to anyone who can reach the server, by design — see the callout below).
+  (open to anyone who can reach it, by design — see the callout below). It listens on its
+  own port, separate from the API, so exposing one doesn't automatically expose the other.
 - **Warm process pool for `claude`** — reuses already-running `claude` processes across
   requests instead of paying a full CLI boot every call, while staying fully stateless from
   the client's point of view.
@@ -48,10 +49,16 @@ to the console, e.g.:
 ```
   Generated a new API key for /v1/*: 3f9c2a1e7b...
   View or change it any time at /settings (no login required to open that page).
+
+cli-wrapper API listening on http://localhost:8869
+settings (no auth required): http://localhost:8868/settings
 ```
 
-You can also view/change it (or any other setting) any time at `/settings` — see
-"Configuration" below.
+Note the two different ports: the settings page defaults to **8868**, the OpenAI API to
+**8869** — they're two separate listeners, on purpose (see "Configuration" below and the
+callout further down).
+
+You can also view/change most settings any time at `/settings` — see "Configuration" below.
 
 > **Check your model ids before relying on the seed config.** `cliModel` values are passed
 > straight through to `--model`/`-m`, and which ones work depends on your login (e.g. a
@@ -61,13 +68,23 @@ You can also view/change it (or any other setting) any time at `/settings` — s
 
 ## Configuration
 
-Everything that used to be an env var now lives in `config.json` and is editable live from
-`http://localhost:8868/settings` — no restart needed (except for `port`):
+Two ports, by design:
+
+| Surface                                   | Default port | Configured via                                                            |
+| ----------------------------------------- | ------------ | ------------------------------------------------------------------------- |
+| Settings (`/settings`, `/api/settings/*`) | `8868`       | env `SETTINGS_PORT` only — not in `config.json` (see below)               |
+| OpenAI API (`/v1/*`)                      | `8869`       | `config.json`'s `settings.apiPort`, or env `PORT` to override for one run |
+
+Splitting them means the unauthenticated settings surface (see the callout below) can be
+bound/exposed independently of the API — e.g. keep settings on localhost only while the API is reachable more broadly.
+
+Everything below lives in `config.json` and is editable live from `http://localhost:8868/settings`
+— no restart needed, except **API port**:
 
 - **API key** — the bearer token required on `/v1/*`. Leave it blank on the settings page
   to disable auth on `/v1/*` entirely (an explicit, visible opt-out — the server never
   starts with a blank key on its own; see the callout below about `/settings` itself).
-- **Port**, **CLI timeout**, **CLI working directory**.
+- **API port**, **CLI timeout**, **CLI working directory**.
 - **Activity log**: whether full prompt/response text is captured, and an optional file
   path to persist the last 200 entries to disk (see "Recent activity" below).
 
@@ -76,44 +93,52 @@ Everything that used to be an env var now lives in `config.json` and is editable
 The `models` array in `config.json` (or the "Model routing" table on `/settings`) is what
 maps a client-facing `model` name to an actual CLI invocation:
 
-| Field | Required | Meaning |
-|---|---|---|
-| `id` | yes | The name clients send as `model` in their request. |
-| `provider` | yes | `claude` or `codex`. |
-| `cliModel` | yes | Passed straight through to `--model`/`-m` — e.g. `sonnet`/`opus` for claude, `gpt-5.5` for codex. Account-dependent; see the callout above. |
-| `extraFlags` | no | Raw argv appended verbatim to the CLI invocation — an escape hatch for anything not covered by the fields below. |
-| `reasoningEffort` | no | Default reasoning effort: `minimal` / `low` / `medium` / `high` / `xhigh` / `max`. Not every value is valid for every provider (see "Reasoning effort and content" below) — an invalid combination surfaces as a CLI-level error at request time, not a config-save-time rejection. |
-| `allowReasoningEffortOverride` | no | Let a request's own `reasoning_effort` field override the default above for that call. Off by default. |
-| `enableWebSearch` | no | Grant this mapping's CLI its built-in web search tool — `claude`'s `WebSearch`, or `codex`'s `web_search`. See "Web search tool" below. |
-| `description` | no | Free text, shown on the settings page only. |
+| Field                          | Required | Meaning                                                                                                                                                                                                                                                                             |
+| ------------------------------ | -------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `id`                           | yes      | The name clients send as `model` in their request.                                                                                                                                                                                                                                  |
+| `provider`                     | yes      | `claude` or `codex`.                                                                                                                                                                                                                                                                |
+| `cliModel`                     | yes      | Passed straight through to `--model`/`-m` — e.g. `sonnet`/`opus` for claude, `gpt-5.5` for codex. Account-dependent; see the callout above.                                                                                                                                         |
+| `extraFlags`                   | no       | Raw argv appended verbatim to the CLI invocation — an escape hatch for anything not covered by the fields below.                                                                                                                                                                    |
+| `reasoningEffort`              | no       | Default reasoning effort: `minimal` / `low` / `medium` / `high` / `xhigh` / `max`. Not every value is valid for every provider (see "Reasoning effort and content" below) — an invalid combination surfaces as a CLI-level error at request time, not a config-save-time rejection. |
+| `allowReasoningEffortOverride` | no       | Let a request's own `reasoning_effort` field override the default above for that call. Off by default.                                                                                                                                                                              |
+| `enableWebSearch`              | no       | Grant this mapping's CLI its built-in web search tool — `claude`'s `WebSearch`, or `codex`'s `web_search`. See "Web search tool" below.                                                                                                                                             |
+| `description`                  | no       | Free text, shown on the settings page only.                                                                                                                                                                                                                                         |
 
 `config.example.json` has working examples of each of these, including a plain mapping per
 provider and one web-search-enabled mapping per provider.
 
-Only two things remain env vars, because they're needed before `config.json` can even be
-located: `CONFIG_PATH` (default `./config.json`) and an optional `PORT` override for
-deployments that inject it themselves (e.g. containers/process managers) — see
-`.env.example`. Editing `config.json` directly also works; it's read fresh on every request,
-same as the model routing table.
+Only three things remain env vars — see `.env.example`:
 
-> **`/settings` has no authentication, by design.** Anyone who can reach this server over
-> the network can open it, read/change the model routing, read/change every setting above
-> — including the API key that guards `/v1/*` — and (if content capture is on) read full
-> past prompts/responses in the activity log. This is an internal/personal-use tool; bind it
-> to localhost or put it behind a network boundary/reverse-proxy with its own auth if it's
-> ever reachable beyond a trusted host.
+- `CONFIG_PATH` (default `./config.json`) — needed before `config.json` can even be located.
+- `SETTINGS_PORT` (default `8868`) — the settings surface's own port; deliberately not a
+  `config.json` field (see "Configuration" above).
+- `PORT` — optional, overrides `config.json`'s `apiPort` for this run only (e.g. for
+  containers/process managers that inject it themselves); never affects `SETTINGS_PORT`.
+
+Editing `config.json` directly also works; it's read fresh on every request, same as the
+model routing table.
+
+> **`/settings` has no authentication, by design.** Anyone who can reach its port can open
+> it, read/change the model routing, read/change every setting above — including the API
+> key that guards `/v1/*` — and (if content capture is on) read full past prompts/responses
+> in the activity log. This is an internal/personal-use tool. It listening on its own port
+> (see "Configuration" above) means you _can_ expose the API more broadly while keeping this
+> port to localhost/a private interface — but that's a mitigation, not a fix: still put this
+> port itself behind a network boundary or reverse-proxy with its own auth if it's ever
+> reachable beyond a trusted host.
 
 ## Usage
 
-`/v1/chat/completions` and `/v1/models` require `Authorization: Bearer <apiKey>` (the key
-shown on `/settings`), unless you've blanked it out there. `/settings` and `/api/settings/*`
-never require auth.
+`/v1/chat/completions` and `/v1/models` — on the **API port** (`8869` by default) — require
+`Authorization: Bearer <apiKey>` (the key shown on `/settings`), unless you've blanked it out
+there. `/settings` and `/api/settings/*` — on the separate **settings port** (`8868` by
+default) — never require auth.
 
 ```sh
-curl http://localhost:8868/v1/models \
+curl http://localhost:8869/v1/models \
   -H "Authorization: Bearer $API_KEY"
 
-curl http://localhost:8868/v1/chat/completions \
+curl http://localhost:8869/v1/chat/completions \
   -H "Authorization: Bearer $API_KEY" \
   -H "Content-Type: application/json" \
   -d '{"model":"claude-sonnet-5","messages":[{"role":"user","content":"Say hi"}]}'
@@ -124,7 +149,7 @@ ending in `data: [DONE]`.
 
 Open `http://localhost:8868/settings` in a browser to edit server configuration and model
 mappings. Changes take effect immediately on the next API request — no restart needed
-(except `port`). The same page has a **Recent activity** panel (auto-refreshing every 4s)
+(except **API port**). The same page has a **Recent activity** panel (auto-refreshing every 4s)
 showing the last 200 chat-completion requests — model, provider, streaming, status,
 duration, token usage, and error message where relevant. Each row has a **View** button
 showing the full prompt sent to the CLI and the full response text. Backed by
@@ -164,7 +189,7 @@ creates `config.json`/`.cli-wrapper-workspace/`/log files relative to wherever y
 from — same as running from a source checkout, just without needing `git clone` + a full
 dev toolchain on the target machine. It seeds `config.json` and generates a fresh API key
 on first run, same as local `npm run dev` — see "Configuration" above; no `.env` needed
-unless you want to override `CONFIG_PATH` or `PORT`. `npm install -g` also resolves and
+unless you want to override `CONFIG_PATH`, `PORT`, or `SETTINGS_PORT`. `npm install -g` also resolves and
 installs this package's own dependencies (`express`, `dotenv`) from the npm registry, so
 the target machine needs npm registry access (or an internal mirror/private registry) at
 install time — the tarball itself doesn't vendor them.
@@ -203,7 +228,7 @@ ask if you want that built out; see `AGENTS.md`'s open optimizations for the tra
   enabled the override, a `reasoning_effort` sent to it is silently ignored, same as any
   other unsupported field above. When effort is requested, the response also includes a
   `reasoning_content` field (`message.reasoning_content` non-streaming, `delta
-  .reasoning_content` chunks streaming — the same field name DeepSeek/LiteLLM/Open WebUI
+.reasoning_content` chunks streaming — the same field name DeepSeek/LiteLLM/Open WebUI
   already use) whenever the underlying CLI produced any visible reasoning text. Note for
   claude specifically: some accounts/plans redact the actual thinking text while still
   billing the tokens for it — in that case `reasoning_content` just won't appear, even
@@ -224,23 +249,22 @@ ask if you want that built out; see `AGENTS.md`'s open optimizations for the tra
 - **Codex streaming**: the Codex CLI doesn't emit token-level deltas, so a "streaming"
   codex response arrives as a single content chunk followed by the completion signal,
   rather than incremental text.
-- A hard timeout (the CLI timeout on the settings page, default 120000ms) kills any
-  subprocess that runs too long, and subprocesses are also killed if the HTTP client
+- A hard timeout (the CLI timeout on the settings page, default 300000ms / 5 minutes) kills
+  any subprocess that runs too long, and subprocesses are also killed if the HTTP client
   disconnects early.
 
 ## Environment variables
 
-Only two — everything else moved to `config.json`/`/settings`, see "Configuration" above.
+Only three — everything else moved to `config.json`/`/settings`, see "Configuration" above.
 
-| Var | Default | Meaning |
-|---|---|---|
-| `CONFIG_PATH` | `./config.json` | Path to the config file (settings + model routing) |
-| `PORT` | *(unset — uses `config.json`'s `settings.port`)* | Overrides the configured port for this run |
+| Var             | Default                                                             | Meaning                                                                                                                              |
+| --------------- | ------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| `CONFIG_PATH`   | `./config.json`                                                     | Path to the config file (settings + model routing)                                                                                   |
+| `SETTINGS_PORT` | `8868`                                                              | Port the settings surface (`/settings`, `/api/settings/*`) listens on. Not in `config.json`, on purpose — see "Configuration" above. |
+| `PORT`          | _(unset — uses `config.json`'s `settings.apiPort`, default `8869`)_ | Overrides the API port for this run only. Never affects `SETTINGS_PORT`.                                                             |
 
 ## More docs
 
-- [`PLAN.md`](./PLAN.md) — the original design plan (architecture, verified CLI flag/event
-  shapes, verification steps) written before this was built.
 - [`AGENTS.md`](./AGENTS.md) — contributor/agent-facing guide: file map, conventions,
   known gotchas hit during development, and open optimization ideas for future work.
   `CLAUDE.md` links to it for Claude Code.
