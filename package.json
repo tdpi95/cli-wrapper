@@ -1,6 +1,6 @@
 {
   "name": "cli-wrapper",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "OpenAI-compatible HTTP API that wraps the claude and codex CLIs as chat-only subprocesses",
   "private": true,
   "type": "module",
