@@ -205,15 +205,27 @@ back on the next start).
 
 The target machine needs Node.js and its own logged-in `claude`/`codex` CLIs (the same
 prerequisites as above) — this doesn't bundle a Node runtime or the CLIs themselves, only
-this wrapper.
+this wrapper. Either way you get the same thing: a `cli-wrapper-<version>.tgz` tarball you
+install with `npm install -g`.
+
+### Option A: download a release
+
+Every tag pushed as `vX.Y.Z` is built and published automatically by this repo's
+[Release workflow](.github/workflows/release.yml). Grab the `.tgz` asset from the
+[Releases page](../../releases) — no local build toolchain needed on the machine doing the
+downloading.
+
+### Option B: build it yourself
 
 ```sh
 npm run build   # or just `npm pack`, which runs this via its "prepack" script
 npm pack        # produces cli-wrapper-<version>.tgz
 ```
 
-Copy the `.tgz` to the other machine (`scp`, a shared drive, an internal artifact store,
-however you move files there) and install it:
+### Install
+
+Copy the `.tgz` (downloaded or built) to the target machine (`scp`, a shared drive, an
+internal artifact store, however you move files there) and install it:
 
 ```sh
 npm install -g ./cli-wrapper-0.1.0.tgz
