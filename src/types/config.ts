@@ -58,9 +58,12 @@ export interface ModelMapping {
 /**
  * Everything that used to live in env vars, now editable at runtime from the
  * settings page (GET/PUT /api/settings/config) instead of requiring a
- * restart with different env vars. Only `PORT`/`CONFIG_PATH` remain
- * env-only — see env.ts for why (bootstrap values needed before config.json
- * can even be located/read).
+ * restart with different env vars. Only `PORT`/`CONFIG_PATH`/`SETTINGS_PORT`
+ * remain env-only — see env.ts for why (bootstrap values needed before
+ * config.json can even be located/read, or — for `SETTINGS_PORT` — needed to
+ * pick which port the settings surface listens on before that surface even
+ * exists to be edited from). See AGENTS.md's "Two ports, by design" section
+ * for the full rationale behind the settings/API port split.
  */
 export interface WrapperSettings {
   /**
@@ -69,8 +72,15 @@ export interface WrapperSettings {
    * silent default; see config.ts's auto-generation on first run).
    */
   apiKey: string;
-  /** HTTP port. Only takes effect on the next restart (the server is already listening by the time this can be read). */
-  port: number;
+  /**
+   * Port for the OpenAI-compatible API (`/v1/*`) only — NOT the settings
+   * surface, which listens on its own port instead (env `SETTINGS_PORT`,
+   * default 8868; see env.ts). Only takes effect on the next restart (the
+   * server is already listening by the time this can be read). Can also be
+   * overridden per-run via the `PORT` env var without persisting to
+   * config.json — see env.ts's `apiPortOverride`.
+   */
+  apiPort: number;
   /** Hard per-request subprocess timeout, in ms. */
   cliTimeoutMs: number;
   /** Working directory passed to the CLIs (resolved relative to process.cwd() if not absolute). */
@@ -89,8 +99,8 @@ export interface WrapperConfig {
 
 export const DEFAULT_SETTINGS: WrapperSettings = {
   apiKey: "",
-  port: 8868,
-  cliTimeoutMs: 120_000,
+  apiPort: 8869,
+  cliTimeoutMs: 300_000,
   cliWorkdir: "./.cli-wrapper-workspace",
   logCaptureContent: true,
   logFilePath: null,

@@ -21,7 +21,7 @@ function generateApiKey(): string {
 function settingsFromLegacyEnv(): Partial<WrapperSettings> {
   const out: Partial<WrapperSettings> = {};
   if (process.env.WRAPPER_API_KEY?.trim()) out.apiKey = process.env.WRAPPER_API_KEY.trim();
-  if (process.env.PORT?.trim()) out.port = Number(process.env.PORT);
+  if (process.env.PORT?.trim()) out.apiPort = Number(process.env.PORT);
   if (process.env.CLI_TIMEOUT_MS?.trim()) out.cliTimeoutMs = Number(process.env.CLI_TIMEOUT_MS);
   if (process.env.CLI_WORKDIR?.trim()) out.cliWorkdir = process.env.CLI_WORKDIR.trim();
   if (process.env.LOG_CAPTURE_CONTENT?.trim()) {
@@ -88,6 +88,21 @@ export function initConfig(resolvedConfigPath: string, examplePath: string): voi
     settings = { ...DEFAULT_SETTINGS, ...raw.settings };
   }
 
+  // Migrating a pre-port-split config: it has a single `port` field (used
+  // for everything) instead of `apiPort` (API only — the settings surface
+  // now listens on its own env-only SETTINGS_PORT, default 8868; see
+  // AGENTS.md's "Two ports, by design"). Deliberately NOT carrying the old
+  // `port` value straight over to `apiPort` — for the common case where it
+  // was still sitting at the old shared default (8868), that would collide
+  // with the new default SETTINGS_PORT on this same host. Reset to the new
+  // default instead; the stale `port` key is dropped either way.
+  const legacySettings = raw.settings as (Partial<WrapperSettings> & { port?: number }) | undefined;
+  if (legacySettings && !("apiPort" in legacySettings)) {
+    settings.apiPort = DEFAULT_SETTINGS.apiPort;
+    changed = true;
+  }
+  delete (settings as WrapperSettings & { port?: number }).port;
+
   const config: WrapperConfig = { version: 2, settings, models: raw.models };
   if (changed) {
     saveConfig(config);
@@ -133,8 +148,8 @@ function validateSettings(s: WrapperSettings): void {
   if (typeof s.apiKey !== "string") {
     throw new ValidationError("`apiKey` must be a string (empty string disables auth on /v1/*)");
   }
-  if (!Number.isInteger(s.port) || s.port < 1 || s.port > 65535) {
-    throw new ValidationError("`port` must be an integer between 1 and 65535");
+  if (!Number.isInteger(s.apiPort) || s.apiPort < 1 || s.apiPort > 65535) {
+    throw new ValidationError("`apiPort` must be an integer between 1 and 65535");
   }
   if (!Number.isInteger(s.cliTimeoutMs) || s.cliTimeoutMs < 1000) {
     throw new ValidationError("`cliTimeoutMs` must be an integer >= 1000");

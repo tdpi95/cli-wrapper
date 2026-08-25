@@ -1,9 +1,9 @@
 # AGENTS.md
 
 Guidance for anyone (human or AI agent) working on this codebase. See `README.md` for
-user-facing setup/usage, and `PLAN.md` for the original design rationale. This file is for
-people *changing* the code: what it does, why it's shaped this way, sharp edges that have
-already bitten us once, and where the obvious next improvements are.
+user-facing setup/usage. This file is for people *changing* the code: what it does, why it's
+shaped this way, sharp edges that have already bitten us once, and where the obvious next
+improvements are.
 
 ## What this is
 
@@ -17,17 +17,22 @@ array is flattened into a single prompt and a brand-new CLI process is spawned p
 
 ```
 src/
-  server.ts          entrypoint — env (just CONFIG_PATH/PORT), config init, workdir, listen
-  app.ts             express app assembly + auth middleware wiring (path-scoped, /v1 only)
-  env.ts             process.env -> Env: only CONFIG_PATH and an optional PORT override —
+  server.ts          entrypoint — env (CONFIG_PATH/PORT/SETTINGS_PORT), config init, workdir,
+                     builds and listens on two separate apps/ports (see app.ts)
+  app.ts             builds two separate express apps — buildApiApp() (/v1/*, auth-guarded)
+                     and buildSettingsApp() (/settings, /api/settings/*, no auth) — see "Two
+                     ports, by design" below
+  env.ts             process.env -> Env: CONFIG_PATH, an optional PORT override (API port
+                     only), and SETTINGS_PORT (settings surface's own port, default 8868) —
                      everything else moved into config.json's `settings` (see config.ts)
   auth.ts            bearer-token check on a live getter (config.getSettings().apiKey), so
                      a key edited on /settings takes effect on the very next request
   config.ts          config.json load (fresh read every call)/save (atomic tmp+rename)/CRUD
                      for both `settings` (server config) and `models` (routing table);
                      initConfig() also seeds a fresh config.json on first run, migrates a
-                     pre-settings (version 1) file in place, and generates a random apiKey
-                     if one isn't already set — see the "Settings has no auth" section below
+                     pre-settings (version 1) file and a pre-port-split (single `port` field)
+                     file in place, and generates a random apiKey if one isn't already set —
+                     see "Settings has no auth" and "Two ports, by design" below
   errors.ts          tagged error classes + toApiError() -> OpenAI-shaped {status, body}
   logs.ts            ring buffer of chat-completion request events (for /settings); optional
                      file persistence via initLogPersistence() at startup, retargetable at
@@ -63,9 +68,9 @@ bin/cli-wrapper.js    uncompiled `bin` entrypoint (shebang + `import "../dist/se
 
 `package.json`'s `files` field whitelists exactly what ships in `npm pack`/`npm install -g`:
 `bin/`, `dist/` (build output — `prepack` runs `npm run build` automatically), `public/`,
-`config.example.json`, `.env.example`, `README.md`. Notably NOT `src/`, `PLAN.md`,
-`AGENTS.md`, `CLAUDE.md` — those stay in the git repo but don't need to ship to a runtime
-install. This assumes the target machine already has Node.js (a safe assumption here since
+`config.example.json`, `.env.example`, `README.md`. Notably NOT `src/`, `AGENTS.md`,
+`CLAUDE.md` — those stay in the git repo but don't need to ship to a runtime install. This
+assumes the target machine already has Node.js (a safe assumption here since
 `claude`/`codex` themselves are npm-distributed CLIs) and npm registry access at install
 time (to resolve `express`/`dotenv` — the tarball doesn't vendor `node_modules`). See
 README's "Shipping to another machine" for the actual commands.
@@ -125,6 +130,63 @@ Consequences worth remembering when touching this code:
 - Because there's no token gate, don't add anything to `/api/settings/*` that assumes the
   caller is trusted beyond "can reach this HTTP server" — e.g. don't have it exec anything,
   read arbitrary paths, etc.
+
+See "Two ports, by design" below for the other half of this: since this surface has no auth
+of its own, it's now also on its own port, so exposing the API more broadly can't accidentally
+expose this too just because they used to share one listener.
+
+## Two ports, by design
+
+The settings surface (`/settings`, `/api/settings/*`) and the OpenAI-compatible API
+(`/v1/*`) listen on two separate ports, from two separate express apps (`app.ts`'s
+`buildSettingsApp()`/`buildApiApp()`, both `listen()`'d independently in `server.ts`) — not
+one app on one port with path-scoped auth, which is how this worked before.
+
+- **Why**: path-scoped auth (still applied to `/v1` — see the gotcha #2 below for why it has
+  to be `app.use(path, mw)`) only protects requests that are routed by *this* app's Express
+  instance in the first place. It does nothing to stop an operator from exposing the single
+  shared port more broadly than intended (a firewall rule, a reverse proxy, a cloud
+  provider's default security group) and taking the unauthenticated settings surface along
+  with it as a side effect — since "Settings has no auth, by design" above means that surface
+  is equivalent to full admin access. Splitting the *port*, not just the URL path, means that
+  mistake requires exposing two separate ports instead of one, and each port can be
+  bound/firewalled independently (e.g. settings on a loopback/private interface only, API on
+  a more broadly reachable one).
+- **Defaults**: settings surface on `8868` (env `SETTINGS_PORT`, in `env.ts` — see below for
+  why it's env-only, not a `config.json` field); API on `8869` (`WrapperSettings.apiPort`,
+  in `config.json`, same "requires restart" caveat the single `port` field always had).
+  These used to be one shared default (`8868`, "port"); picked 8869 for the API rather than
+  reusing 8868 for either surface so the two new defaults never collide with each other out
+  of the box.
+- **Why `SETTINGS_PORT` is env-only, not `config.json`'s `settings.settingsPort`**: the
+  settings surface is what lets you edit `config.json` in the first place — its own port
+  can't sensibly live inside the thing it edits (same bootstrap-ordering reasoning as
+  `CONFIG_PATH`). More importantly: keeping it out of the live-editable, unauthenticated
+  `/api/settings/*` surface means a request to that same unauthenticated surface can never
+  change the port that surface itself listens on.
+- **`PORT` env var meaning changed**: previously overrode the one shared port; now overrides
+  `apiPort` specifically (`env.ts`'s `apiPortOverride`), same as before — doesn't persist to
+  `config.json`, same one-per-run semantics as always. Never controls the settings port.
+- **Migration** (`config.ts`'s `initConfig()`): a config predating this split has a `port`
+  field instead of `apiPort`. Deliberately does **not** carry the old `port` value straight
+  over to the new `apiPort` — for the common case where it was still sitting at the old
+  shared default (`8868`), that would collide with the new default `SETTINGS_PORT` on the
+  same host the moment both listeners start. Resets to the new default (`8869`) instead,
+  silently — no console announcement (an earlier version of this migration printed one; removed
+  as unnecessary noise). Operators upgrading a customized old `port` should just double-check
+  `apiPort` on `/settings` post-upgrade. Verified live: an old-style config with `port: 9999`
+  rewrote the file with `apiPort: 8869` and the stale `port` key removed, no console output.
+- **Verified live, both ports**: `/settings`/`/api/settings/config` return `200` on the
+  settings port and `404` on the API port; `/v1/models` returns `200` (with a valid bearer
+  token) on the API port and `404` on the settings port — genuine cross-port isolation, not
+  just a routing convention that happens to not be hit.
+- **Settings page UI consequence**: the "API base URL" field on `/settings` used to be
+  derived from `location.origin` (the settings page's own address) — that's now wrong, since
+  it would show the *settings* port, not the API's. It's derived from `location.hostname`
+  plus the loaded/saved `apiPort` value instead (`updateApiHostInput()` in `settings.html`,
+  called from `fillSettingsForm()` so it updates on every load and every save) — still
+  assumes both surfaces run on the same host, which holds for every deployment shape this
+  wrapper currently supports.
 
 ## Gotchas already hit (verified live, not hypothetical — read before refactoring nearby code)
 
@@ -531,8 +593,8 @@ shipped so far (and only for claude, not codex — see its own bullet).
   revisiting — a prompt-based simulation (describe the client's tools in-prompt, parse a
   structured reply back into `tool_calls`) is the only halfway-plausible route found, and
   it's unreliable, not real tool-use semantics.
-- **Optional agentic/tool mode** was explicitly scoped out of v1 (see `PLAN.md`'s Context
-  section) in favor of pure chat completions. If ever revisited: needs a real sandboxing
+- **Optional agentic/tool mode** was explicitly scoped out of v1 in favor of pure chat
+  completions. If ever revisited: needs a real sandboxing
   decision (per-request temp workdir at minimum, likely a container or VM boundary given
   HTTP exposure), a way to surface tool-call events in OpenAI's `tool_calls` response
   shape, and a hard rethink of the "never hangs" guarantee once approval prompts become a
