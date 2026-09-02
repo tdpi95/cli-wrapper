@@ -10,13 +10,18 @@ import { shutdownCodexAppServerPool } from "./process/codexAppServer.js";
 import { buildApiApp, buildSettingsApp } from "./app.js";
 
 const env = loadEnv();
+
+// Always ensure this exists before initConfig() runs, independent of
+// cliWorkdir's actual value below — it's the fixed anchor a relative
+// logFilePath resolves against (see types/config.ts's CLI_WRAPPER_HOME_DIR
+// doc comment), and, since env.ts now defaults a missing/invalid cwd
+// config.json to CLI_WRAPPER_HOME_DIR too, it may also be the directory
+// initConfig() is about to seed a brand-new config.json into — which would
+// fail with ENOENT on a first run if this dir didn't exist yet.
+fs.mkdirSync(CLI_WRAPPER_HOME_DIR, { recursive: true });
+
 initConfig(env.configPath, resolveConfigExamplePath());
 const settings = getSettings();
-
-// Always ensure this exists, independent of cliWorkdir's actual value below —
-// it's the fixed anchor a relative logFilePath resolves against (see
-// types/config.ts's CLI_WRAPPER_HOME_DIR doc comment).
-fs.mkdirSync(CLI_WRAPPER_HOME_DIR, { recursive: true });
 
 const cliWorkdir = path.resolve(process.cwd(), settings.cliWorkdir);
 fs.mkdirSync(cliWorkdir, { recursive: true });

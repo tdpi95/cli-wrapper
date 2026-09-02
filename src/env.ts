@@ -1,4 +1,6 @@
+import fs from "node:fs";
 import path from "node:path";
+import { CLI_WRAPPER_HOME_DIR } from "./types/config.js";
 
 /**
  * Only the values that genuinely can't live in config.json: the path to
@@ -29,8 +31,46 @@ export interface Env {
 
 const DEFAULT_SETTINGS_PORT = 8868;
 
+/**
+ * A minimal, cheap check — not full schema validation (that's config.ts's
+ * job, and it throws a proper error if this passes but the file turns out to
+ * be malformed some other way). Just enough to tell "there's a config.json
+ * here" from "there isn't" for the cwd-vs-home-dir default decision below:
+ * readable, parses as JSON, and has the one field every version of this
+ * file (including the pre-settings-page v1 shape initConfig() still
+ * migrates) has always had.
+ */
+function looksLikeConfigFile(p: string): boolean {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(p, "utf8")) as { models?: unknown };
+    return Array.isArray(parsed?.models);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * No CONFIG_PATH override: default to ./config.json only if one actually
+ * exists there and looks valid — otherwise fall back to
+ * ~/.cli-wrapper/config.json, the same home-dir dotfolder cliWorkdir and a
+ * relative logFilePath already default under (see types/config.ts's
+ * CLI_WRAPPER_HOME_DIR doc comment). Without this, a globally-installed
+ * `cli-wrapper` run from an arbitrary directory with no config.json of its
+ * own would seed and scatter a brand-new one wherever it happened to be
+ * invoked from — the same class of problem CLI_WRAPPER_HOME_DIR was
+ * introduced to fix for cliWorkdir/logFilePath, just left unfixed here.
+ * A directory that already has its own valid config.json (e.g. this repo's
+ * own checkout during local dev) keeps using it, unchanged from before.
+ */
+function resolveDefaultConfigPath(): string {
+  const cwdConfigPath = path.resolve(process.cwd(), "config.json");
+  if (looksLikeConfigFile(cwdConfigPath)) return cwdConfigPath;
+  return path.join(CLI_WRAPPER_HOME_DIR, "config.json");
+}
+
 export function loadEnv(): Env {
-  const configPath = path.resolve(process.cwd(), process.env.CONFIG_PATH ?? "./config.json");
+  const configPathOverride = process.env.CONFIG_PATH?.trim();
+  const configPath = configPathOverride ? path.resolve(process.cwd(), configPathOverride) : resolveDefaultConfigPath();
   const apiPortOverride = process.env.PORT?.trim() ? Number(process.env.PORT) : undefined;
   const settingsPort = process.env.SETTINGS_PORT?.trim() ? Number(process.env.SETTINGS_PORT) : DEFAULT_SETTINGS_PORT;
   return { configPath, apiPortOverride, settingsPort };

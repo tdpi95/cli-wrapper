@@ -22,9 +22,11 @@ src/
   app.ts             builds two separate express apps — buildApiApp() (/v1/*, auth-guarded)
                      and buildSettingsApp() (/settings, /api/settings/*, no auth) — see "Two
                      ports, by design" below
-  env.ts             process.env -> Env: CONFIG_PATH, an optional PORT override (API port
-                     only), and SETTINGS_PORT (settings surface's own port, default 8868) —
-                     everything else moved into config.json's `settings` (see config.ts)
+  env.ts             process.env -> Env: CONFIG_PATH (defaults to ./config.json if valid,
+                     else ~/.cli-wrapper/config.json — see "Config path defaults to the
+                     home directory" below), an optional PORT override (API port only), and
+                     SETTINGS_PORT (settings surface's own port, default 8868) — everything
+                     else moved into config.json's `settings` (see config.ts)
   auth.ts            bearer-token check on a live getter (config.getSettings().apiKey), so
                      a key edited on /settings takes effect on the very next request
   config.ts          config.json load (fresh read every call)/save (atomic tmp+rename)/CRUD
@@ -206,6 +208,48 @@ one app on one port with path-scoped auth, which is how this worked before.
   called from `fillSettingsForm()` so it updates on every load and every save) — still
   assumes both surfaces run on the same host, which holds for every deployment shape this
   wrapper currently supports.
+
+## Config path defaults to the home directory when cwd has none
+
+`env.ts`'s `loadEnv()` no longer unconditionally defaults `CONFIG_PATH` to
+`./config.json` (cwd-relative). An explicit `CONFIG_PATH` env var still always wins,
+resolved against `process.cwd()` exactly as before. Absent that override, it now checks
+whether `./config.json` already exists there and looks like a real config file (readable,
+parses as JSON, has an array `models` field — the same minimal shape `initConfig()` itself
+requires to accept an existing file without throwing); if so, that path is used, unchanged
+from before. If cwd has no `config.json`, or an unreadable/malformed one, the default
+instead becomes `~/.cli-wrapper/config.json` — the same home dotfolder
+(`types/config.ts`'s `CLI_WRAPPER_HOME_DIR`) `cliWorkdir` and a relative `logFilePath`
+already default under (see "Default cliWorkdir and log file base dir to ~/.cli-wrapper" in
+git history / gotcha #6 below).
+
+- **Why**: without this, a globally-installed `cli-wrapper` run from an arbitrary directory
+  with no `config.json` of its own would seed and scatter a brand-new one wherever it
+  happened to be invoked from — the exact same class of problem `CLI_WRAPPER_HOME_DIR` was
+  introduced to fix for `cliWorkdir`/`logFilePath`, just left unfixed for the config file
+  itself until now.
+- **A directory that already has its own valid `config.json`** — this repo's own checkout
+  during local dev, or any deployment that intentionally keeps one alongside the app —
+  keeps using it, exactly as before. This only changes behavior for a cwd with no config
+  file (or a broken one) at all.
+- **`server.ts` ordering matters here**: `fs.mkdirSync(CLI_WRAPPER_HOME_DIR, {recursive:
+  true})` now has to run *before* `initConfig()`, not after — `initConfig()` may be about to
+  seed a brand-new `config.json` directly into that directory on a genuine first run, which
+  would fail with `ENOENT` if the directory didn't exist yet. It used to run after
+  `initConfig()` since, before this change, `config.json` itself never lived under
+  `CLI_WRAPPER_HOME_DIR`.
+- **Verified live**: an empty cwd with `HOME` pointed at a fresh temp dir produced
+  `<HOME>/.cli-wrapper/config.json` (seeded, with a generated API key) and left the cwd
+  untouched; a cwd with a valid `config.json` already in it kept using that path unchanged;
+  a cwd with a syntactically invalid `config.json` (`"not valid json{{{"`) was left alone
+  (not overwritten) and the server fell back to `<HOME>/.cli-wrapper/config.json` instead of
+  erroring out.
+- **Not itself a validation pass** — `looksLikeConfigFile()` in `env.ts` is deliberately
+  loose (just "parses as JSON and has a `models` array"), the same shape check
+  `initConfig()` already uses to accept an existing file. Its only job is deciding *which
+  path* to hand `initConfig()`; `initConfig()`/`loadConfig()` still do the real validation
+  and still throw a clear error for a config that's structurally present but otherwise
+  malformed, unchanged from before.
 
 ## Gotchas already hit (verified live, not hypothetical — read before refactoring nearby code)
 

@@ -137,7 +137,10 @@ the full design, verified-live numbers, and gotchas.
 
 Only three things remain env vars — see `.env.example`:
 
-- `CONFIG_PATH` (default `./config.json`) — needed before `config.json` can even be located.
+- `CONFIG_PATH` — needed before `config.json` can even be located. Defaults to
+  `./config.json` if one already exists there and looks valid, else
+  `~/.cli-wrapper/config.json` (see "Config path defaults to the home directory" in
+  `AGENTS.md`).
 - `SETTINGS_PORT` (default `8868`) — the settings surface's own port; deliberately not a
   `config.json` field (see "Configuration" above).
 - `PORT` — optional, overrides `config.json`'s `apiPort` for this run only (e.g. for
@@ -236,11 +239,12 @@ npm install -g ./cli-wrapper-0.1.0.tgz
 cli-wrapper
 ```
 
-That installs a `cli-wrapper` command (from this package's `bin` entry) onto `PATH`. It
-creates `config.json` relative to wherever you run it from (same as running from a source
-checkout, just without needing `git clone` + a full dev toolchain on the target machine),
-and the CLI working directory / activity log file (if enabled) under `~/.cli-wrapper/`
-regardless of where you run it from — see "Configuration" above. It seeds `config.json` and
+That installs a `cli-wrapper` command (from this package's `bin` entry) onto `PATH`. If the
+directory you run it from already has its own `config.json`, that's what it uses (same as
+running from a source checkout). Otherwise it creates `config.json` under `~/.cli-wrapper/`
+instead of scattering one into whatever directory you happened to run it from — same
+dotfolder the CLI working directory / activity log file (if enabled) already default under
+regardless of where you run it — see "Configuration" above. It seeds `config.json` and
 generates a fresh API key on first run, same as local `npm run dev`; no `.env` needed
 unless you want to override `CONFIG_PATH`, `PORT`, or `SETTINGS_PORT`. `npm install -g` also resolves and
 installs this package's own dependencies (`express`, `dotenv`) from the npm registry, so
@@ -312,7 +316,7 @@ Only three — everything else moved to `config.json`/`/settings`, see "Configur
 
 | Var             | Default                                                             | Meaning                                                                                                                              |
 | --------------- | ------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
-| `CONFIG_PATH`   | `./config.json`                                                     | Path to the config file (settings + model routing)                                                                                   |
+| `CONFIG_PATH`   | `./config.json` if valid, else `~/.cli-wrapper/config.json`        | Path to the config file (settings + model routing)                                                                                   |
 | `SETTINGS_PORT` | `8868`                                                              | Port the settings surface (`/settings`, `/api/settings/*`) listens on. Not in `config.json`, on purpose — see "Configuration" above. |
 | `PORT`          | _(unset — uses `config.json`'s `settings.apiPort`, default `8869`)_ | Overrides the API port for this run only. Never affects `SETTINGS_PORT`.                                                             |
 
