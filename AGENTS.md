@@ -570,6 +570,51 @@ including pulling the protocol's JSON schema via `codex app-server generate-json
   extraction — the callback-to-async-generator bridge both this file's and claudePool.ts's
   streaming paths need, previously duplicated as a private class inside claudePool.ts.
 
+## Multiple agent messages per turn (codex, all four paths)
+
+Newer codex models can emit **more than one agent message in a single turn**. Verified live
+with `gpt-5.6-sol` on codex-cli 0.157.0 and `enableWebSearch` on: first a short preamble
+(`"I'll verify this against the official Node.js release page."`), then the `web_search`
+tool call, then the real answer. It's the model's choice, not every turn: with the prompt
+`Search the web: what is the latest stable release of Node.js? One line, cite the source.`
+it happened on nearly every exec-path run, and on only about half of app-server runs.
+(`buildTurnInput` doesn't append the trailing `Assistant:` that exec's `buildPrompt` does,
+which may be why.)
+
+**Behavior, the same on every codex path:** every non-empty agent message is kept, in
+order, joined with `"\n\n"` (`AGENT_MESSAGE_SEPARATOR`, defined in both
+`providers/codex.ts` and `process/codexAppServer.ts`). When streaming, the separator is
+prepended to the first chunk of each message after the first. Streamed and non-streamed
+text for the same turn are therefore identical. Nothing the model said is silently
+dropped. This replaced four inconsistent behaviors: exec non-streaming kept only the last
+message, both streaming paths glued messages together with no separator, and app-server
+non-streaming read `turn.items`.
+
+Why not final-message-only: exec's JSONL `agent_message` items carry no marker saying
+which one is final, so exec streaming can't know until `turn.completed`. It would have to
+buffer the whole turn, which defeats streaming. The app-server protocol does mark them
+(`phase: "commentary"` vs. `phase: "final_answer"` on the `agentMessage` item, already set
+at `item/started` before any delta). So final-only would be possible there, but it would
+make the two codex paths disagree. If final-only is ever wanted, the app-server half is
+easy: filter by `phase`. The exec half is the hard one.
+
+Protocol details for the app-server path (verified live, easy to get wrong):
+- **`turn/completed`'s `turn.items` lists only the `final_answer` message.** The
+  commentary preamble isn't in it at all. So non-streaming collects agent messages from
+  `item/completed` notifications as they arrive (`waitForTurn`'s `agentMessages`), and
+  uses `turn.items` only as a fallback. The old
+  `turn.items.find(i => i.type === "agentMessage")` looked like it would return the
+  preamble. On 0.157.0 it actually returned the answer and dropped the preamble silently.
+  Either way it was fragile.
+- **Message boundaries while streaming come from `item/agentMessage/delta`'s `itemId`.**
+  A delta whose `itemId` differs from the previous delta's starts a new message.
+  `waitForTurn` inserts the separator there, so the streaming callback doesn't need to
+  know about it.
+- Not changed: multiple *reasoning* items in one turn (seen live on the same prompt) are
+  still concatenated with no separator on the app-server path's
+  `item/reasoning/summaryTextDelta` stream. Same class of issue, only reachable with
+  `reasoningEffort` set; the exec path already joins reasoning items with `"\n\n"`.
+
 ## Reasoning effort control and content (`ModelMapping.reasoningEffort`/`allowReasoningEffortOverride`)
 
 A model mapping can set a default reasoning effort and optionally let a per-request
