@@ -326,6 +326,10 @@ esbuild + Node's Single Executable Application feature or a packager like `@yao-
 - **Chat-only**: both CLIs run with tools/file/shell access disabled by default. `claude`
   uses `--tools ""`; `codex` uses `--sandbox read-only`. Neither can modify your filesystem
   or run commands via this wrapper. The one opt-in exception is the web search tool below.
+  `codex` requests also switch off everything from your own `~/.codex` setup (plugins,
+  skills, MCP servers, connected ChatGPT apps, hooks) and codex's own default-on extras,
+  including the web tool it otherwise enables on every request. See AGENTS.md gotcha #8,
+  and re-check it after upgrading codex.
 - **Unsupported OpenAI fields**: `temperature`, `max_tokens`, `top_p`, etc. are accepted in
   the request body but ignored — the underlying CLIs don't expose equivalent controls
   through this wrapper.

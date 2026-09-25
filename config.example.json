@@ -21,10 +21,10 @@
     {
       "id": "claude-opus-5",
       "provider": "claude",
-      "cliModel": "opus",
+      "cliModel": "claude-opus-5",
       "reasoningEffort": "high",
       "allowReasoningEffortOverride": true,
-      "description": "Claude Opus via the Claude Code CLI, extended thinking on by default (override with the request's reasoning_effort field)"
+      "description": "Claude Opus 5 (pinned full model id) via the Claude Code CLI, extended thinking on by default (override with the request's reasoning_effort field)"
     },
     {
       "id": "claude-sonnet-5-websearch",

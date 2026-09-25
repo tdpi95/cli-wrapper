@@ -1,5 +1,6 @@
 import { spawnManaged, timeoutErrorFor } from "../process/run.js";
 import { codexProxyBypassEnv } from "../process/codexProxyBypass.js";
+import { codexIsolationArgs } from "../process/codexIsolation.js";
 import { runAppServerNonStreaming, runAppServerStreaming } from "../process/codexAppServer.js";
 import { writeImagesToTempDir } from "../attachments.js";
 import { CliExecutionError } from "../errors.js";
@@ -47,13 +48,11 @@ function args(opts: RunOptions, imagePaths: string[]): string[] {
     "read-only",
     "--skip-git-repo-check",
     "--ephemeral",
-    // Without this, codex auto-discovers and injects the nearest AGENTS.md
-    // up the directory tree into its context (verified live: leaked this
-    // very repo's own AGENTS.md content into responses when cliWorkdir sat
-    // inside it) — not the chat-only "clean" backend this wrapper is meant
-    // to provide. 0 disables reading it entirely.
-    "-c",
-    "project_doc_max_bytes=0",
+    // Turns off the operator's ~/.codex plugins/skills/MCP servers/apps, the
+    // project AGENTS.md auto-discovery, and codex's own default-on extras
+    // (including its default web tool) — see process/codexIsolation.ts. Also
+    // where enableWebSearch is applied, as codex's `web_search` mode.
+    ...codexIsolationArgs(opts.enableWebSearch),
     // model_reasoning_summary/show_raw_agent_reasoning gate whether codex
     // emits any "reasoning" item at all — verified live that any one or two
     // of these three overrides alone produces nothing, all three together
@@ -63,17 +62,6 @@ function args(opts: RunOptions, imagePaths: string[]): string[] {
     ...(opts.reasoningEffort
       ? ["-c", `model_reasoning_effort=${opts.reasoningEffort}`, "-c", "model_reasoning_summary=detailed", "-c", "show_raw_agent_reasoning=true"]
       : []),
-    // Grants codex's built-in web_search tool (config.toml's [tools] block,
-    // here as a one-off -c override). Unlike claude, there's no permission
-    // gate to fight — codex exec never prompts (see gotcha #3) — so this is
-    // just the one flag. Verified live: produces real item.completed events
-    // of type "web_search" plus a final agent_message citing what it found;
-    // consume()'s event loop already ignores item types it doesn't
-    // pattern-match (see its trailing "ignore" comment), so no changes were
-    // needed there to support this. Whether the account/model actually
-    // supports it isn't re-validated here — same laissez-faire approach as
-    // cliModel (gotcha #4).
-    ...(opts.enableWebSearch ? ["-c", "tools.web_search=true"] : []),
     // One `--image` per file, not one `--image a b c`: the flag is variadic,
     // so this keeps each value unambiguous. Always our own temp paths (see
     // attachments.ts's writeImagesToTempDir), never client-supplied ones.

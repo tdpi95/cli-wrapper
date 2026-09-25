@@ -65,9 +65,11 @@ export interface ModelMapping {
    *     `server_tool_use.web_search_requests`, not a local subprocess/file
    *     write) — a deliberate, narrow exception to the "Tool use ... is an
    *     intentional non-goal" note elsewhere in AGENTS.md, not a reversal of it.
-   *   - codex: `-c tools.web_search=true` (providers/codex.ts's args()).
-   *     codex exec never prompts for approval regardless (see gotcha #3), so
-   *     there's no permission-mode equivalent to pick here.
+   *   - codex: codex's `web_search` mode, `"live"` vs `"disabled"`
+   *     (process/codexIsolation.ts, used by both codex paths). Always set
+   *     explicitly, because codex-cli 0.157.0 otherwise has a web tool on by
+   *     default. codex exec never prompts for approval regardless (see
+   *     gotcha #3), so there's no permission-mode equivalent to pick here.
    * Omitted/false = today's behavior, unchanged: no tools available to
    * either CLI. Whether the account/model actually supports it isn't
    * validated for either provider — same laissez-faire approach as

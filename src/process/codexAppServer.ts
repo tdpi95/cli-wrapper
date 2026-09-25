@@ -2,6 +2,7 @@ import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import readline from "node:readline";
 import { killWithGrace, timeoutErrorFor } from "./run.js";
 import { codexProxyBypassEnv } from "./codexProxyBypass.js";
+import { codexIsolationArgs, codexIsolationConfig } from "./codexIsolation.js";
 import { AsyncEventQueue } from "./asyncEventQueue.js";
 import { getSettings } from "../config.js";
 import { CliExecutionError } from "../errors.js";
@@ -163,7 +164,11 @@ function isOverloadError(err: unknown): boolean {
 
 function spawnDaemon(): Daemon {
   const bypass = codexProxyBypassEnv();
-  const child = spawn(CMD, ["app-server"], {
+  // Isolation overrides at spawn too, not just per thread (below): they keep
+  // the daemon itself from ever starting the operator's configured MCP
+  // servers/plugins/hooks. The web_search mode here is only a default —
+  // each thread/start sets its own. See process/codexIsolation.ts.
+  const child = spawn(CMD, ["app-server", ...codexIsolationArgs(false)], {
     shell: false,
     stdio: ["pipe", "pipe", "pipe"],
     env: bypass ? { ...process.env, ...bypass } : undefined,
@@ -309,12 +314,10 @@ async function startEphemeralTurn(opts: RunOptions, imagePaths: string[]): Promi
         model: opts.cliModel,
         cwd: opts.workdir,
         sandbox: "read-only",
-        config: {
-          // Same leak fix as the legacy exec path (providers/codex.ts) — see
-          // AGENTS.md gotcha #6.
-          project_doc_max_bytes: 0,
-          ...(opts.enableWebSearch ? { tools: { web_search: true } } : {}),
-        },
+        // Same isolation overrides as the exec path (see
+        // process/codexIsolation.ts), including the AGENTS.md leak fix
+        // (gotcha #6) and enableWebSearch as codex's `web_search` mode.
+        config: codexIsolationConfig(opts.enableWebSearch),
       });
       const threadId = threadStart.thread.id;
       const turnStart = await send(daemon, "turn/start", {

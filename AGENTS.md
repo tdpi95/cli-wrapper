@@ -66,6 +66,9 @@ src/
                      the "Warm codex app-server pool" section below
     codexProxyBypass.ts codexBypassProxyForOpenAI's NO_PROXY-widening logic, shared by
                      codex.ts's exec path and codexAppServer.ts's daemon spawn
+    codexIsolation.ts  config overrides that switch off the operator's ~/.codex plugins/
+                     skills/MCP servers/apps and codex's default-on extras, plus the
+                     web_search mode — shared by both codex paths; see gotcha #8
     asyncEventQueue.ts small callback-to-async-generator bridge shared by claudePool.ts's
                      and codexAppServer.ts's streaming paths
   routes/
@@ -336,7 +339,8 @@ These are documented in detail as comments at their fix sites, but the summary:
    - **codex**: separately, `codex exec` auto-discovers and injects the nearest `AGENTS.md`
      up the directory tree (a different mechanism from claude's CLAUDE.md — codex does this
      regardless of system-prompt content, since it has no `--system-prompt` flag at all).
-     Fix: `providers/codex.ts` now passes `-c project_doc_max_bytes=0`, confirmed live to
+     Fix: both codex paths pass `project_doc_max_bytes=0` (now part of
+     `process/codexIsolation.ts`'s override list — see gotcha #8), confirmed live to
      suppress it.
    - Either leak only reproduces when `cliWorkdir` (or a parent of it) contains a
      `CLAUDE.md`/`AGENTS.md`/`.git` — an operator running this wrapper from inside some
@@ -359,6 +363,58 @@ These are documented in detail as comments at their fix sites, but the summary:
    exist yet) — an existing config's `settings.apiKey`, blank or not, is now always respected
    verbatim. Verified live again post-fix: same explicit-`""` config across two startups, no
    regeneration, no rewrite.
+
+8. **codex loads the operator's whole `~/.codex` setup into every wrapper request, and
+   codex-cli 0.157.0 adds default-on tools of its own.** Found while testing PDF input: a
+   wrapper-style `codex exec` read a plugin's `SKILL.md` from `~/.codex/plugins/` with its
+   shell tool and followed it. Asking the model to list its callable tools (verified live,
+   gpt-5.6-sol) showed far more than the "chat-only" design allows: the operator's connected
+   ChatGPT apps (Gmail, GitHub, Slack, Google Drive, Outlook, ...) via a `codex_apps` MCP
+   server, a computer-use JS REPL from a user-configured MCP server, 15 skills (bundled,
+   plugin-provided, and the user's own `~/.codex/skills`), image generation, goals,
+   sub-agents, and a `web__run` web tool **on every mapping, even without
+   `enableWebSearch`**. Same class of leak as gotcha #6, but through the CLI's user-level
+   config instead of the working directory.
+   - **Fix**: `process/codexIsolation.ts` builds one override list used by both codex paths:
+     as `-c key=value` args on `codex exec` and on the `codex app-server` daemon spawn (so
+     the daemon never starts the operator's MCP servers/plugins at all), and as the nested
+     `config` object on each `thread/start`. It switches off `features.apps`/`plugins`/
+     `remote_plugin`/`hooks`/`computer_use`/`browser_use`/`in_app_browser`/
+     `image_generation`/`goals`/`tool_suggest`/`skill_search`/`multi_agent`, sets
+     `skills.bundled.enabled=false` and `skills.include_instructions=false`, caps
+     `agents.max_threads=1`, sets codex's top-level `web_search` mode (`"disabled"`, or
+     `"live"` for `enableWebSearch`), and keeps gotcha #6's `project_doc_max_bytes=0`.
+   - **MCP servers have to be turned off by name.** `-c mcp_servers={}` does nothing
+     useful: codex merges it into the existing table, and the configured `node_repl` server
+     was still running under every daemon, confirmed via the process tree, even though its
+     tools no longer showed up. `mcp_servers.<name>.enabled=false` does stop it, so
+     `userMcpServerNames()` reads `$CODEX_HOME/config.toml` (default `~/.codex`) fresh on
+     every request and turns each named server off. It's a small regex scan of table headers
+     and dotted keys, not a TOML parser, so a server defined as an inline table or inside a
+     profile would be missed.
+   - **Sub-agent tools can't be removed.** `agents.max_threads=0` is rejected
+     (`must be at least 1`). They're inert anyway: on the wrapper's ephemeral threads,
+     `spawn_agent` fails with `no thread with id` (verified live, with and without the cap).
+     `max_threads=1` keeps it that way if that ever changes.
+   - **Approaches rejected**: `--ignore-user-config` exists only on `codex exec` (not
+     `app-server`), and even there it left connected apps, sub-agents and skills in place.
+     Pointing `CODEX_HOME` at a wrapper-owned folder would strip everything, but codex
+     rewrites `auth.json` when it refreshes its login, so a separate copy risks logging the
+     operator's own codex out. `features.code_mode_host=false` breaks code mode ("will fail
+     closed"), which is how codex exposes even its basic tools, so that stays on.
+   - **What's left after the fix** (both paths, verified live via the wrapper): codex's
+     code-mode wrappers (`functions.exec`/`wait`), the inert `collaboration.*` sub-agent
+     tools, `exec_command`/`write_stdin` (the read-only-sandboxed shell), `apply_patch`
+     (blocked by `--sandbox read-only`), `view_image` and `request_user_input`. No skills,
+     plugins or MCP servers, and no warnings about unrecognized config keys. The daemons'
+     only child processes are codex itself and its `codex-code-mode-host`. Web search works
+     only on `enableWebSearch` mappings; others answer "no web tool". Images still work.
+   - **Re-check after every codex upgrade.** New releases add default-on features this list
+     won't know about. The check: run `codex exec --json` with `codexIsolationArgs(false)`
+     and a prompt asking the model to "reply with only a JSON object listing every tool
+     name you can call, every skill, every plugin", confirm the list is still the short set
+     above, and grep the JSONL for `Codex is ignoring` (a renamed key). For the warm pool,
+     also check `ps` for unexpected children under each `codex app-server` daemon.
 
 ## Is a new CLI process spawned per request?
 
@@ -494,8 +550,9 @@ including pulling the protocol's JSON schema via `codex app-server generate-json
   no observed state bleed between them. Reproduced through the actual HTTP API too: 4
   concurrent `POST /v1/chat/completions` requests all returned 200 in ~7s total.
 - Reasoning effort/summary (`turn/start`'s `effort`/`summary` fields) and web search
-  (`thread/start`'s `config: {tools: {web_search: true}}`, the same raw config.toml-style
-  override `-c tools.web_search=true` uses) both work identically to the exec path — confirmed
+  (`thread/start`'s `config`, originally `{tools: {web_search: true}}`, now codex's
+  `web_search` mode via `codexIsolationConfig()` — see gotcha #8) both work identically to
+  the exec path — confirmed
   live with a real web-search turn producing `item/started`/`item/completed` events of
   `type: "webSearch"` and a cited final answer.
 - Streaming is **strictly better** than the exec path here: `item/agentMessage/delta` and
@@ -765,12 +822,16 @@ that can ever become available on a claude mapping, regardless of `enableWebSear
 
 ### codex
 
-- **How it's passed** (`providers/codex.ts`'s `args()`): `enableWebSearch` appends `-c
-  tools.web_search=true` — the one-off-override form of a `config.toml` `[tools]` block
-  (found by pulling the config schema strings out of the actual codex native binary: a
-  `ToolsToml` struct has a `web_search` field). Unlike claude, there's no permission-mode
-  fight to have — `codex exec` never prompts for approval regardless of what tools are
-  enabled (see gotcha #3) — so this is the only flag needed.
+- **How it's passed** (`process/codexIsolation.ts`, used by both codex paths): codex's
+  top-level `web_search` mode, `"live"` when `enableWebSearch` is set, `"disabled"`
+  otherwise. It originally used `-c tools.web_search=true` (the `[tools]` block's
+  `web_search` field, found in the codex binary's config schema strings). On codex-cli
+  0.157.0 that's no longer enough: the top-level mode wins (`web_search="disabled"` plus
+  `tools.web_search=true` has no web tool), and leaving the mode unset gives *every* turn a
+  `web__run` web tool by default, so it's now always set explicitly (see gotcha #8).
+  Unlike claude, there's no permission-mode fight to have — `codex exec` never prompts for
+  approval regardless of what tools are enabled (see gotcha #3) — so this is the only
+  setting needed.
 - **Verified live**: `codex exec --json -c tools.web_search=true "..."` produced real
   `item.started`/`item.completed` events of `type:"web_search"` (with the actual query and,
   in one run, a cited article URL suggesting the tool fetches content, not just snippet
