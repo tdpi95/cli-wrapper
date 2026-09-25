@@ -22,6 +22,9 @@ host — no separate API key to provision for the model calls themselves.
 - **Reasoning effort control** — set a default per model mapping, optionally let a request's
   own `reasoning_effort` field override it, and get any reasoning/thinking content back as
   `reasoning_content`.
+- **Image and file attachments** — OpenAI-style `image_url` and `file` content parts, sent
+  as base64 or (under an allowlist) as a local file path. Images work with both CLIs, PDFs
+  with `claude` only, and text files are inlined for both. See "Attachments" under Usage.
 - **Optional built-in web search** — per model mapping, grant `claude`'s `WebSearch` tool or
   `codex`'s `web_search` tool, without opening up general shell/file tool access.
 - **Recent-activity log** — the last 200 requests, viewable on the settings page, with
@@ -98,6 +101,9 @@ Everything below lives in `config.json` and is editable live from `http://localh
   wherever `cli-wrapper` happens to be run from.
 - **Codex warm pool** (`codexUseWarmPool`, off by default) and **pool size**
   (`codexPoolSize`, default `2`) — see "Codex warm pool (experimental)" below.
+- **Local file roots** (`localFileRoots`, empty by default) — absolute directories that
+  requests may attach files from by path (see "Attachments" below). Empty means local
+  paths are rejected and only base64 attachments work.
 
 ### Model routing
 
@@ -108,9 +114,9 @@ maps a client-facing `model` name to an actual CLI invocation:
 | ------------------------------ | -------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `id`                           | yes      | The name clients send as `model` in their request.                                                                                                                                                                                                                                  |
 | `provider`                     | yes      | `claude` or `codex`.                                                                                                                                                                                                                                                                |
-| `cliModel`                     | yes      | Passed straight through to `--model`/`-m` — e.g. `sonnet`/`opus` for claude, `gpt-5.5` for codex. Account-dependent; see the callout above.                                                                                                                                         |
+| `cliModel`                     | yes      | Passed straight through to `--model`/`-m` — e.g. `sonnet`/`opus` for claude, `gpt-5.6-sol` for codex. Account-dependent; see the callout above.                                                                                                                                         |
 | `extraFlags`                   | no       | Raw argv appended verbatim to the CLI invocation — an escape hatch for anything not covered by the fields below.                                                                                                                                                                    |
-| `reasoningEffort`              | no       | Default reasoning effort: `minimal` / `low` / `medium` / `high` / `xhigh` / `max`. Not every value is valid for every provider (see "Reasoning effort and content" below) — an invalid combination surfaces as a CLI-level error at request time, not a config-save-time rejection. |
+| `reasoningEffort`              | no       | Default reasoning effort: `minimal` / `low` / `medium` / `high` / `xhigh` / `max` / `ultra`. Not every value is valid for every model (see "Reasoning effort and content" below). An unsupported one isn't rejected: the CLI silently falls back (claude to its default effort, codex to a level the model supports). |
 | `allowReasoningEffortOverride` | no       | Let a request's own `reasoning_effort` field override the default above for that call. Off by default.                                                                                                                                                                              |
 | `enableWebSearch`              | no       | Grant this mapping's CLI its built-in web search tool — `claude`'s `WebSearch`, or `codex`'s `web_search`. See "Web search tool" below.                                                                                                                                             |
 | `description`                  | no       | Free text, shown on the settings page only.                                                                                                                                                                                                                                         |
@@ -177,6 +183,51 @@ curl http://localhost:8869/v1/chat/completions \
 
 Streaming works the same way with `"stream": true` — responses are Server-Sent Events
 ending in `data: [DONE]`.
+
+### Attachments
+
+User messages can use OpenAI's array-of-parts `content` shape to attach images and files:
+
+```json
+{
+  "model": "claude-sonnet-5",
+  "messages": [
+    {
+      "role": "user",
+      "content": [
+        { "type": "text", "text": "What's in these?" },
+        { "type": "image_url", "image_url": { "url": "data:image/png;base64,iVBORw0..." } },
+        { "type": "image_url", "image_url": { "url": "/srv/shared/photo.jpg" } },
+        { "type": "file", "file": { "filename": "report.pdf", "file_data": "data:application/pdf;base64,JVBERi0..." } },
+        { "type": "file", "file": { "file_data": "file:///srv/shared/notes.md" } }
+      ]
+    }
+  ]
+}
+```
+
+- `image_url.url`: a base64 `data:` URL, a `file://` URL, or an absolute path. Remote
+  `http(s)` URLs are not fetched.
+- `file.file_data`: a base64 `data:` URL, raw base64, or a `file://` URL. `file_id` (OpenAI's
+  Files API) isn't supported.
+- **Local paths only work under `localFileRoots`** (settings page; empty = disabled).
+  Symlinks are resolved before the check. Anyone holding the API key can have the model read
+  any file under these directories, so keep them narrow.
+- The type is detected from the file's bytes, not its name or declared mime type:
+
+  | Type                      | `claude`           | `codex`            |
+  | ------------------------- | ------------------ | ------------------ |
+  | PNG / JPEG / GIF / WebP   | native image input | native image input |
+  | PDF                       | native document    | rejected (400)     |
+  | Any other UTF-8 text file | inlined into the prompt | inlined into the prompt |
+  | Other binary files        | rejected (400)     | rejected (400)     |
+
+- Limit is 20 MB per attachment, and 64 MB for the whole JSON request body. Each CLI's own
+  per-image limits are lower and show up as that CLI's own error.
+- Attachments are only allowed on `user` messages. `system`/`assistant` messages may use the
+  array shape, but with text parts only.
+- The activity log records an `[Image 1: name]` label for each attachment, never its bytes.
+  Inlined text files are logged in full, like any other prompt text.
 
 Open `http://localhost:8868/settings` in a browser to edit server configuration and model
 mappings. Changes take effect immediately on the next API request — no restart needed
@@ -279,7 +330,7 @@ esbuild + Node's Single Executable Application feature or a packager like `@yao-
   the request body but ignored — the underlying CLIs don't expose equivalent controls
   through this wrapper.
 - **Reasoning effort and content**: a model mapping can set a default reasoning effort
-  (`minimal` / `low` / `medium` / `high` / `xhigh` / `max`) on the settings page, and
+  (`minimal` / `low` / `medium` / `high` / `xhigh` / `max` / `ultra`) on the settings page, and
   optionally allow a request's own `reasoning_effort` field (same field name real OpenAI
   reasoning models use) to override it for that call. Off by default — if a mapping hasn't
   enabled the override, a `reasoning_effort` sent to it is silently ignored, same as any

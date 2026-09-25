@@ -1,3 +1,5 @@
+import type { Attachment, AttachmentKind } from "../attachments.js";
+import type { PromptSegment } from "../transcript.js";
 import type { ReasoningEffort } from "../types/config.js";
 
 export interface Usage {
@@ -16,7 +18,12 @@ export interface RunOptions {
   /** See ModelMapping.enableWebSearch — each provider wires this to its own mechanism. */
   enableWebSearch?: boolean;
   systemPrompt: string;
+  /** Text-only rendering, attachments shown as labels — see FlattenedPrompt in transcript.ts. */
   transcript: string;
+  /** `transcript` with each attachment's bytes after its label, in order. A text-only request is one text segment. */
+  segments: PromptSegment[];
+  /** Every attachment in `segments`, in order. chat.ts has already rejected any kind outside the provider's supportedAttachmentKinds. */
+  attachments: Attachment[];
   timeoutMs: number;
   workdir: string;
   signal?: AbortSignal;
@@ -44,6 +51,8 @@ export type StreamChunk =
   | { kind: "error"; message: string };
 
 export interface CliProvider {
+  /** Attachment kinds this CLI can take natively; chat.ts rejects anything else with a 400 before spawning. */
+  supportedAttachmentKinds: ReadonlySet<AttachmentKind>;
   runNonStreaming(opts: RunOptions): Promise<RunResult>;
   runStreaming(opts: RunOptions): AsyncIterable<StreamChunk>;
 }

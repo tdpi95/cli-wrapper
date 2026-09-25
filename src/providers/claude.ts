@@ -6,6 +6,7 @@ import type { CliProvider } from "./types.js";
 // top-of-file comment for the full design rationale. This file just adapts
 // it to the CliProvider shape chat.ts expects, same as codex.ts.
 export const claudeProvider: CliProvider = {
+  supportedAttachmentKinds: new Set(["image", "pdf"]),
   runNonStreaming: runWarmNonStreaming,
   runStreaming: runWarmStreaming,
 };

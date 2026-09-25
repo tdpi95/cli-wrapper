@@ -90,6 +90,15 @@ const MAX_OVERLOAD_RETRIES = 2;
 const OVERLOAD_BACKOFF_MS = 500;
 /** JSON-RPC error code the app-server protocol documents for "request ingress saturated" (upstream README). */
 const OVERLOAD_ERROR_CODE = -32001;
+/**
+ * A turn can carry more than one agentMessage item — verified live
+ * (gpt-5.6-sol, codex-cli 0.157.0, web search on): a `phase: "commentary"`
+ * preamble, then the tool call, then the `phase: "final_answer"` message.
+ * All of them are kept, joined with this, to match providers/codex.ts's exec
+ * path (whose JSONL has no phase marker, so it can't pick out the final one
+ * while streaming). See AGENTS.md's "Multiple agent messages per turn".
+ */
+const AGENT_MESSAGE_SEPARATOR = "\n\n";
 
 interface JsonRpcMessage {
   id?: number;
@@ -256,11 +265,31 @@ function releaseDaemon(daemon: Daemon): void {
   daemon.inFlightTurns = Math.max(0, daemon.inFlightTurns - 1);
 }
 
-function buildTurnText(opts: RunOptions): string {
+type TurnInput = { type: "text"; text: string } | { type: "localImage"; path: string };
+
+/**
+ * turn/start's `input` is an ordered list, so unlike the exec path's
+ * out-of-band `--image`, each image lands right after its "[Image N]" label.
+ * `imagePaths` lines up with opts.attachments' images, in order (see
+ * providers/codex.ts, which writes them).
+ */
+function buildTurnInput(opts: RunOptions, imagePaths: string[]): TurnInput[] {
   // codex has no system-prompt flag/field, same situation as the legacy exec
   // path (providers/codex.ts's buildPrompt) — prepend a labeled block instead.
-  if (opts.systemPrompt.trim() === "") return opts.transcript;
-  return `System: ${opts.systemPrompt}\n\n${opts.transcript}`;
+  const prefix = opts.systemPrompt.trim() === "" ? "" : `System: ${opts.systemPrompt}\n\n`;
+  const input: TurnInput[] = [];
+  let imageIndex = 0;
+  for (const [i, seg] of opts.segments.entries()) {
+    if (seg.type === "text") {
+      const text = i === 0 ? prefix + seg.text : seg.text;
+      if (text !== "") input.push({ type: "text", text });
+      continue;
+    }
+    if (i === 0 && prefix) input.push({ type: "text", text: prefix });
+    input.push({ type: "localImage", path: imagePaths[imageIndex++] });
+  }
+  if (input.length === 0) input.push({ type: "text", text: prefix });
+  return input;
 }
 
 /**
@@ -269,7 +298,7 @@ function buildTurnText(opts: RunOptions): string {
  * retry, since the one that's overloaded staying overloaded is the likely
  * case) up to MAX_OVERLOAD_RETRIES times before giving up.
  */
-async function startEphemeralTurn(opts: RunOptions): Promise<{ daemon: Daemon; threadId: string; turnId: string }> {
+async function startEphemeralTurn(opts: RunOptions, imagePaths: string[]): Promise<{ daemon: Daemon; threadId: string; turnId: string }> {
   let lastErr: unknown;
   for (let attempt = 0; attempt <= MAX_OVERLOAD_RETRIES; attempt++) {
     if (attempt > 0) await new Promise((r) => setTimeout(r, OVERLOAD_BACKOFF_MS));
@@ -290,7 +319,7 @@ async function startEphemeralTurn(opts: RunOptions): Promise<{ daemon: Daemon; t
       const threadId = threadStart.thread.id;
       const turnStart = await send(daemon, "turn/start", {
         threadId,
-        input: [{ type: "text", text: buildTurnText(opts) }],
+        input: buildTurnInput(opts, imagePaths),
         ...(opts.reasoningEffort ? { effort: opts.reasoningEffort, summary: "detailed" } : {}),
       });
       return { daemon, threadId, turnId: turnStart.turn.id };
@@ -323,15 +352,38 @@ function usageFrom(tokenUsage: any): Usage {
   return { promptTokens: u.inputTokens ?? 0, completionTokens: u.outputTokens ?? 0, totalTokens: u.totalTokens ?? 0 };
 }
 
-/** Resolves with the turn's terminal state once `turn/completed` arrives; forwards deltas via the callbacks as they stream in. Rejects only if the daemon itself dies mid-turn. */
-function waitForTurn(daemon: Daemon, threadId: string, callbacks?: TurnDeltaCallbacks): Promise<{ turn: CodexTurn; usage: Usage }> {
+/**
+ * Resolves with the turn's terminal state once `turn/completed` arrives;
+ * forwards deltas via the callbacks as they stream in. Rejects only if the
+ * daemon itself dies mid-turn.
+ *
+ * `agentMessages` is every agentMessage item's final text, in order, from
+ * `item/completed` — not from `turn/completed`'s own `turn.items`, which
+ * verified live lists only the final_answer message and drops the
+ * commentary preamble. Text deltas get AGENT_MESSAGE_SEPARATOR prepended
+ * whenever a new message (a different `itemId`) starts after text was
+ * already forwarded, so streamed and non-streamed text come out identical.
+ */
+function waitForTurn(daemon: Daemon, threadId: string, callbacks?: TurnDeltaCallbacks): Promise<{ turn: CodexTurn; usage: Usage; agentMessages: string[] }> {
   return new Promise((resolve, reject) => {
     let usage: Usage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
+    const agentMessages: string[] = [];
+    let lastDeltaItemId: string | undefined;
+    let forwardedText = false;
     daemon.turnHandlers.set(threadId, {
       onNotif(msg) {
         switch (msg.method) {
-          case "item/agentMessage/delta":
-            callbacks?.onTextDelta?.(msg.params.delta ?? "");
+          case "item/agentMessage/delta": {
+            const delta: string = msg.params.delta ?? "";
+            if (delta === "") break;
+            const newMessage = msg.params.itemId !== lastDeltaItemId;
+            lastDeltaItemId = msg.params.itemId;
+            callbacks?.onTextDelta?.(newMessage && forwardedText ? AGENT_MESSAGE_SEPARATOR + delta : delta);
+            forwardedText = true;
+            break;
+          }
+          case "item/completed":
+            if (msg.params.item?.type === "agentMessage") agentMessages.push(msg.params.item.text ?? "");
             break;
           case "item/reasoning/summaryTextDelta":
             callbacks?.onReasoningDelta?.(msg.params.delta ?? "");
@@ -341,10 +393,11 @@ function waitForTurn(daemon: Daemon, threadId: string, callbacks?: TurnDeltaCall
             break;
           case "turn/completed":
             daemon.turnHandlers.delete(threadId);
-            resolve({ turn: msg.params.turn, usage });
+            resolve({ turn: msg.params.turn, usage, agentMessages });
             break;
           // "error" (transient reconnect/websocket-fallback warnings — same
           // gotcha #5 noise as the legacy exec path), "warning", "item/started",
+          // item/completed for anything but an agentMessage,
           // "thread/status/changed", "account/rateLimits/updated",
           // "mcpServer/startupStatus/updated": ignore. Only the turn's own
           // terminal status/error (below) determines success or failure, not
@@ -403,8 +456,11 @@ function mapStopReason(turn: CodexTurn): StopReason {
   return turn.status === "failed" ? "error" : "stop";
 }
 
-function agentMessageTextFrom(turn: CodexTurn): string | undefined {
-  return turn.items.find((i) => i.type === "agentMessage")?.text;
+/** All of the turn's agent messages joined (see AGENT_MESSAGE_SEPARATOR), or undefined if it had none. turn.items is only a fallback in case no item/completed was seen — see waitForTurn. */
+function agentMessageTextFrom(turn: CodexTurn, agentMessages: string[]): string | undefined {
+  const texts = agentMessages.length ? agentMessages : turn.items.filter((i) => i.type === "agentMessage").map((i) => i.text ?? "");
+  if (texts.length === 0) return undefined;
+  return texts.filter((t) => t !== "").join(AGENT_MESSAGE_SEPARATOR);
 }
 
 function reasoningTextFrom(turn: CodexTurn): string | undefined {
@@ -412,8 +468,8 @@ function reasoningTextFrom(turn: CodexTurn): string | undefined {
   return parts.length ? parts.join("\n\n") : undefined;
 }
 
-export async function runAppServerNonStreaming(opts: RunOptions): Promise<RunResult> {
-  const { daemon, threadId, turnId } = await startEphemeralTurn(opts);
+export async function runAppServerNonStreaming(opts: RunOptions, imagePaths: string[]): Promise<RunResult> {
+  const { daemon, threadId, turnId } = await startEphemeralTurn(opts, imagePaths);
   try {
     let reasoningText = "";
     const result = waitForTurn(daemon, threadId, {
@@ -421,13 +477,13 @@ export async function runAppServerNonStreaming(opts: RunOptions): Promise<RunRes
         reasoningText += text;
       },
     });
-    const { turn, usage } = await raceWithTimeoutAndAbort(result, daemon, threadId, turnId, opts);
+    const { turn, usage, agentMessages } = await raceWithTimeoutAndAbort(result, daemon, threadId, turnId, opts);
     daemon.turnsServed++;
 
     if (turn.status === "failed") {
       throw new CliExecutionError(turn.error?.message ?? "codex reported an error");
     }
-    const text = agentMessageTextFrom(turn);
+    const text = agentMessageTextFrom(turn, agentMessages);
     if (text === undefined) {
       throw new CliExecutionError("codex produced no output");
     }
@@ -442,7 +498,7 @@ export async function runAppServerNonStreaming(opts: RunOptions): Promise<RunRes
   }
 }
 
-export async function* runAppServerStreaming(opts: RunOptions): AsyncIterable<StreamChunk> {
+export async function* runAppServerStreaming(opts: RunOptions, imagePaths: string[]): AsyncIterable<StreamChunk> {
   const queue = new AsyncEventQueue<StreamChunk>();
   let roleSent = false;
 
@@ -451,7 +507,7 @@ export async function* runAppServerStreaming(opts: RunOptions): AsyncIterable<St
     let threadId: string;
     let turnId: string;
     try {
-      ({ daemon, threadId, turnId } = await startEphemeralTurn(opts));
+      ({ daemon, threadId, turnId } = await startEphemeralTurn(opts, imagePaths));
     } catch (err) {
       queue.push({ kind: "error", message: err instanceof Error ? err.message : String(err) });
       queue.end();
@@ -476,12 +532,12 @@ export async function* runAppServerStreaming(opts: RunOptions): AsyncIterable<St
           queue.push({ kind: "reasoning", text });
         },
       });
-      const { turn, usage } = await raceWithTimeoutAndAbort(result, daemon, threadId, turnId, opts);
+      const { turn, usage, agentMessages } = await raceWithTimeoutAndAbort(result, daemon, threadId, turnId, opts);
       daemon.turnsServed++;
 
       if (turn.status === "failed") {
         queue.push({ kind: "error", message: turn.error?.message ?? "codex reported an error" });
-      } else if (agentMessageTextFrom(turn) === undefined) {
+      } else if (agentMessageTextFrom(turn, agentMessages) === undefined) {
         queue.push({ kind: "error", message: "codex produced no output" });
       } else {
         queue.push({ kind: "done", usage, stopReason: mapStopReason(turn) });

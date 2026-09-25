@@ -24,7 +24,7 @@ import type { RunOptions, RunResult, StopReason, StreamChunk, Usage } from "../p
 //   mapping id, so two mappings that happen to share both reuse one pool.
 // - --effort is spawn-time-only too, so it's folded into the same pool key
 //   (cliModel, extraFlags, reasoningEffort). Unlike system prompt below,
-//   this is fine to key on — only 6 legal values (see ReasoningEffort in
+//   this is fine to key on — only 7 legal values (see ReasoningEffort in
 //   types/config.ts), a small bounded multiplier on pool size rather than
 //   unbounded cardinality, and MAX_TOTAL_WORKERS still caps the worst case.
 //   A request with no reasoningEffort gets no --effort flag at all — same
@@ -162,7 +162,7 @@ function spawnWorker(key: string, spawnArgs: PoolKeyParts, workdir: string): Wor
     // commit hashes into responses without this flag, and were clean with
     // it. Passing "" here unconditionally neutralizes that default; the
     // caller's actual system prompt (if any) is still delivered separately,
-    // folded into the turn text by buildTurnText() below — --system-prompt
+    // folded into the turn text by buildTurnContent() below — --system-prompt
     // itself can't carry it because it's spawn-time-only (see the pool
     // design comment at the top of this file).
     "--system-prompt",
@@ -446,9 +446,9 @@ export function getPoolStatus(): PoolStatus {
   };
 }
 
-function sendUserTurn(worker: Worker, text: string): void {
+function sendUserTurn(worker: Worker, content: ContentBlock[]): void {
   try {
-    worker.child.stdin.write(JSON.stringify({ type: "user", message: { role: "user", content: [{ type: "text", text }] } }) + "\n");
+    worker.child.stdin.write(JSON.stringify({ type: "user", message: { role: "user", content } }) + "\n");
   } catch (err) {
     worker.broken = true;
     worker.currentTurn?.onExit(null, null);
@@ -546,11 +546,33 @@ function raceWithTimeoutAndAbort<T>(promise: Promise<T>, worker: Worker, opts: R
   });
 }
 
-function buildTurnText(opts: RunOptions): string {
+/** Anthropic Messages-API content blocks — stream-json input takes them verbatim. */
+type ContentBlock =
+  | { type: "text"; text: string }
+  | { type: "image"; source: { type: "base64"; media_type: string; data: string } }
+  | { type: "document"; source: { type: "base64"; media_type: string; data: string }; title: string };
+
+function buildTurnContent(opts: RunOptions): ContentBlock[] {
   // --system-prompt is spawn-time-only (see the module comment above) — fold
   // it into the turn text instead, same approach providers/codex.ts uses.
-  if (opts.systemPrompt.trim() === "") return opts.transcript;
-  return `System: ${opts.systemPrompt}\n\n${opts.transcript}`;
+  const prefix = opts.systemPrompt.trim() === "" ? "" : `System: ${opts.systemPrompt}\n\n`;
+  const blocks: ContentBlock[] = [];
+  for (const [i, seg] of opts.segments.entries()) {
+    if (seg.type === "text") {
+      const text = i === 0 ? prefix + seg.text : seg.text;
+      if (text !== "") blocks.push({ type: "text", text });
+      continue;
+    }
+    if (i === 0 && prefix) blocks.push({ type: "text", text: prefix });
+    // Images and PDFs both go through as native content blocks — verified
+    // live that claude -p's stream-json input accepts `image` and base64
+    // `document` blocks exactly as the Messages API does.
+    const { attachment: att } = seg;
+    const source = { type: "base64" as const, media_type: att.mediaType, data: att.data.toString("base64") };
+    blocks.push(att.kind === "image" ? { type: "image", source } : { type: "document", source, title: att.filename });
+  }
+  if (blocks.length === 0) blocks.push({ type: "text", text: prefix });
+  return blocks;
 }
 
 function mapStopReason(stopReason: string | null, isError: boolean): StopReason {
@@ -571,7 +593,7 @@ async function clearConversation(worker: Worker, opts: RunOptions): Promise<void
   // synchronously in sendUserTurn can still reject via onExit — call it
   // second, not first.
   const result = waitForResult(worker);
-  sendUserTurn(worker, "/clear");
+  sendUserTurn(worker, [{ type: "text", text: "/clear" }]);
   await raceWithTimeoutAndAbort(result, worker, opts);
 }
 
@@ -586,7 +608,7 @@ export async function runWarmNonStreaming(opts: RunOptions): Promise<RunResult> 
 
     let reasoningText = "";
     const result = waitForResult(worker, { onReasoningDelta: (text) => { reasoningText += text; } });
-    sendUserTurn(worker, buildTurnText(opts));
+    sendUserTurn(worker, buildTurnContent(opts));
     const evt = await raceWithTimeoutAndAbort(result, worker, opts);
     worker.usesRemaining--;
 
@@ -650,7 +672,7 @@ export async function* runWarmStreaming(opts: RunOptions): AsyncIterable<StreamC
           queue.push({ kind: "reasoning", text });
         },
       });
-      sendUserTurn(worker, buildTurnText(opts));
+      sendUserTurn(worker, buildTurnContent(opts));
       const evt = await raceWithTimeoutAndAbort(result, worker, opts);
       worker.usesRemaining--;
 

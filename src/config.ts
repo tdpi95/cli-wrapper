@@ -181,6 +181,9 @@ function validateSettings(s: WrapperSettings): void {
   if (!Number.isInteger(s.codexPoolSize) || s.codexPoolSize < 1) {
     throw new ValidationError("`codexPoolSize` must be an integer >= 1");
   }
+  if (!Array.isArray(s.localFileRoots) || !s.localFileRoots.every((r) => typeof r === "string" && path.isAbsolute(r))) {
+    throw new ValidationError("`localFileRoots` must be an array of absolute directory paths");
+  }
 }
 
 /** Merges `patch` onto the current settings, validates, and saves. Returns the new settings. */

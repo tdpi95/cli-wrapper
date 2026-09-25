@@ -24,7 +24,9 @@ import { settingsRouter } from "./routes/settings.js";
  */
 export function buildApiApp() {
   const app = express();
-  app.use(express.json({ limit: "10mb" }));
+  // Sized for base64 attachments (~4/3 of their decoded size), which can
+  // each be up to attachments.ts's MAX_ATTACHMENT_BYTES.
+  app.use(express.json({ limit: "64mb" }));
   app.get("/healthz", (_req, res) => res.json({ status: "ok" }));
   app.use("/v1", bearerAuth(() => getSettings().apiKey));
   app.use(chatRouter());

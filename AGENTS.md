@@ -39,7 +39,11 @@ src/
   logs.ts            ring buffer of chat-completion request events (for /settings); optional
                      file persistence via initLogPersistence() at startup, retargetable at
                      runtime via setLogPersistPath() when the settings page changes it
-  transcript.ts       flattenMessages(): OpenAI messages[] -> {systemPrompt, transcript}
+  transcript.ts       flattenMessages(): OpenAI messages[] (string or array-of-parts content)
+                     -> {systemPrompt, transcript, segments, attachments}
+  attachments.ts     image_url/file content parts -> validated Attachment (image/pdf) or
+                     inlined text; localFileRoots allowlist; codex temp-file helper — see
+                     "Image and file attachments" below
   types/config.ts    ModelMapping / WrapperSettings / WrapperConfig types
   providers/
     types.ts         CliProvider interface shared by both backends
@@ -582,13 +586,23 @@ was captured, so "no reasoning happened" and "reasoning happened but content was
 distinguishable up to the OpenAI response shape, which simply omits the key in the former
 case (see `openai/transform.ts`).
 
-- **Shared six-value enum** (`REASONING_EFFORT_VALUES`/`ReasoningEffort` in
-  `types/config.ts`): `minimal`/`low`/`medium`/`high`/`xhigh`/`max`. Neither CLI accepts all
-  six — claude's `--effort` has no `minimal`, codex's `-c model_reasoning_effort=` has
-  neither `xhigh` nor `max` — but same as `cliModel` (gotcha #4), this is validated only for
-  typos, not provider/account correctness. Picking a value the mapping's actual provider
-  doesn't support surfaces as a CLI-level error at request time, not a config-save-time
-  rejection.
+- **Shared seven-value enum** (`REASONING_EFFORT_VALUES`/`ReasoningEffort` in
+  `types/config.ts`): `minimal`/`low`/`medium`/`high`/`xhigh`/`max`/`ultra`. Neither CLI
+  accepts all seven. claude's `--effort` takes `low`..`max`. codex's set is per *model*, not
+  per CLI: as of codex-cli 0.157.0, `model/list` on the app-server (see "Model discovery"
+  under Open optimizations) reports `low`..`ultra` for gpt-6-astra/-sol and
+  gpt-5.6-sol/-terra, `low`..`max` for the `-luna` models, and `low`..`xhigh` for gpt-5.5.
+  No current codex model lists `minimal`; it stays in the enum so existing configs that
+  say it (valid on older codex versions) still load. Same as `cliModel` (gotcha #4), this is
+  validated only for typos, not provider/model correctness. **A value the model doesn't
+  support is silently downgraded, not an error** (verified live 2026-09-25, correcting an
+  earlier claim here that it errors). claude prints `Unknown --effort value 'ultra' —
+  ignoring it and using the default effort` to stderr (nobody reads it, since the turn
+  succeeds) and runs at its default. codex accepted `ultra` on gpt-5.5 and returned
+  normally, even though the API's own enum for that request stops at `max`, so the CLI must
+  be adjusting it before sending. Only a value neither CLI recognizes at all (e.g. `bogus`)
+  fails: codex returns a `turn.failed` API error. The enum check above already blocks those,
+  so through this wrapper an out-of-range effort in practice just gets a quieter answer.
 - **codex** (`providers/codex.ts`): trivial — it's already a one-shot spawn per request, so
   `-c model_reasoning_effort=<value>` is appended fresh to that request's argv when resolved,
   bundled with `-c model_reasoning_summary=detailed -c show_raw_agent_reasoning=true` (all
@@ -604,7 +618,7 @@ case (see `openai/transform.ts`).
 - **claude** (`process/claudePool.ts`): `--effort` is spawn-time-only like `--model`, so it's
   folded into the pool key — `PoolKeyParts` and `poolKeyFor()` now include `reasoningEffort`.
   Unlike system prompt (deliberately *not* keyed — unbounded cardinality), this is a safe key
-  to add: only 6 legal values, a small bounded multiplier on pool size, still capped overall
+  to add: only 7 legal values, a small bounded multiplier on pool size, still capped overall
   by `MAX_TOTAL_WORKERS`. Verified live: two mappings resolving to the same effective
   `(cliModel, extraFlags, reasoningEffort)` tuple shared one warm process; a third mapping
   resolving to a different tuple got its own. A request with no effort resolved gets no
@@ -626,14 +640,14 @@ case (see `openai/transform.ts`).
   **silently ignored** — same convention as `temperature`/`max_tokens`/etc. (unsupported
   fields are ignored, not errored) — rather than a 400, since sending it isn't necessarily a
   mistake (some client libraries set it by default). If override *is* allowed but the value
-  isn't one of the six, that's a real 400 `invalid_request` — the mapping opted into this
+  isn't one of the seven, that's a real 400 `invalid_request` — the mapping opted into this
   field being meaningful, so a garbage value is a genuine client error, not a passthrough.
 - **Settings page**: the model routing table/form now has a "Default reasoning effort"
   select and an "Allow per-request override" checkbox alongside the existing fields. The
   select's options are rebuilt per-provider client-side (`REASONING_EFFORT_BY_PROVIDER`/
-  `populateReasoningEffortOptions()` in `settings.html`) — claude's 5, codex's 4 — purely as
-  a UI nicety pointed at the right subset; the server-side validation stays the shared
-  6-value enum regardless (see above), so this never blocks a value the API itself would
+  `populateReasoningEffortOptions()` in `settings.html`) — claude's 5, codex's 6 (the union
+  across its current models) — purely as a UI nicety pointed at the right subset; the
+  server-side validation stays the shared 7-value enum regardless (see above), so this never blocks a value the API itself would
   accept. Two behaviors that are easy to get backwards if touching this: switching the
   provider dropdown *drops* a previously-selected value that isn't valid for the new
   provider (no `allowExtra`, defaults to the select's current value as "previous"); loading
@@ -731,6 +745,62 @@ that can ever become available on a claude mapping, regardless of `enableWebSear
 - **Settings page**: model routing form/table gained an "Enable web search" checkbox/column
   next to the reasoning-effort controls, applying to either provider.
 
+## Image and file attachments (`attachments.ts`, `transcript.ts`)
+
+User messages can carry OpenAI-shaped `image_url` and `file` content parts. Everything is
+read, decoded and type-sniffed inside `flattenMessages()`, *before* any CLI is touched, so a
+bad path, bad base64 or unsupported type is a clean 400 instead of a CLI error.
+
+- **Accepted sources**: `image_url.url` = `data:` URL, `file://` URL, or a bare absolute
+  path. `file.file_data` = `data:` URL, raw base64, or `file://` URL. A bare absolute path is
+  deliberately *not* accepted in `file_data`: raw base64 can start with `/` (every JPEG's
+  does: `/9j/`), so it would be ambiguous. Remote `http(s)` image URLs aren't fetched, and
+  `file_id` is rejected.
+- **Type is sniffed from magic bytes**, never trusted from the declared mime or filename.
+  claude rejects a `media_type` that doesn't match the bytes. PNG/JPEG/GIF/WebP → `image`,
+  `%PDF-` → `pdf`, anything that decodes as UTF-8 with no NUL bytes → inlined into the
+  transcript as `[File: name]\n...\n[End of file: name]` (never an `Attachment`, so both
+  providers get it with no provider-specific code). Anything else → 400.
+- **`FlattenedPrompt` now has three views of the same content**: `transcript` (text only,
+  with an `[Image N: name]`/`[PDF N: name]` label where each attachment sits — this is what
+  gets logged, so base64 never reaches the activity log), `segments` (the same text with
+  each attachment's bytes right after its label), and `attachments` (the flat ordered list).
+  `RunOptions` carries all three.
+- **claude** (`claudePool.ts`'s `buildTurnContent`): segments become Messages-API content
+  blocks on the stream-json user turn. Images become base64 `image` blocks and PDFs become
+  base64 `document` blocks, interleaved where they appeared. Verified live that `claude -p
+  --input-format stream-json` accepts both exactly as the API does. The pool key is
+  untouched: content is per-turn, not spawn-time.
+- **codex** takes images only by file path, so `providers/codex.ts` writes each image to a
+  private `mkdtemp` dir (our own filenames, mode 0600) and removes it once the turn ends,
+  on both paths and in both streaming and non-streaming. The exec path passes one `--image
+  <path>` per file (the flag is variadic, so one flag per value keeps it unambiguous), with
+  a note in the prompt that images are attached in label order, since `--image` attaches
+  them out-of-band. The app-server path sends `localImage` input items interleaved in
+  `turn/start`'s `input`. Verified live on both paths, streaming and non-streaming.
+- **codex has no document input at all.** Neither `codex exec`'s flags nor app-server's
+  `UserInput` union (text/image/localImage/audio/localAudio/skill/mention, per
+  `codex app-server generate-json-schema` on 0.149.1) has one. `CliProvider
+  .supportedAttachmentKinds` (claude: image+pdf, codex: image) lets `chat.ts` reject a PDF
+  routed to codex with a 400. The one route considered and not taken: dropping the PDF in
+  the workdir and letting codex's read-only shell tool extract it. That depends on whatever
+  host binaries exist (`pdftotext`?) and makes attachments a tool-use feature.
+- **Local paths are gated by `WrapperSettings.localFileRoots`** (absolute dirs, default
+  `[]` = disabled). Without that gate, the `/v1` API key alone would be enough to make the
+  server read any file its user can (`~/.ssh`, the `config.json` holding that very key) and
+  have the model echo it back. `readLocalFile` checks the `realpath` (symlinks resolved)
+  against each root's `realpath`, so `..` and symlinks pointing outside a root are both
+  rejected. Verified live: outside-root, `..` escape, a symlink to `/etc/passwd` inside a
+  root, and relative paths all return 400. Settings is unauthenticated (see above), so this
+  list is editable by anyone who can reach the settings port. That's the same trust level
+  as the API key it sits next to, not a new hole.
+- **Limits**: `MAX_ATTACHMENT_BYTES` (20 MB decoded, per attachment). The API app's
+  `express.json` limit was raised from 10 MB to 64 MB to fit base64 overhead. The settings
+  app stays at 10 MB. Each CLI's own per-image limits are lower and show up as CLI errors.
+- Attachments are only accepted on `user` messages. `system`/`assistant`/`tool` messages
+  accept the array shape with text parts only (previously *any* array content was coerced
+  to `"[object Object]"` and silently sent to the model as garbage).
+
 ## Open optimizations for future development
 
 Roughly ordered by likely value; the warm process pool is the main one of these shipped so
@@ -810,8 +880,14 @@ bullet below.
   from the settings UI) to suggest valid `cliModel` values instead of requiring the
   operator to already know them — would have caught gotcha #4 automatically.
   Note: as of Codex CLI 0.146.0, `features list` only enumerates feature flags, not model
-  ids — this would need a different introspection point (or scraping `config.toml`) to be
-  useful for model discovery.
+  ids. The working introspection point is `codex app-server`'s `model/list` JSON-RPC
+  method (after the usual `initialize`/`initialized` handshake; `includeHidden: true` adds
+  hidden models): it returns each model's id, `isDefault`, `supportedReasoningEfforts`,
+  `defaultReasoningEffort` and `inputModalities`. It's the account's real list, not a
+  hardcoded catalog. claude has no equivalent: `--help` only documents the
+  `fable`/`opus`/`sonnet` aliases (plus `haiku`, which works too). The only reliable check is
+  a one-line `claude -p --model <x> --output-format json` call, reading the resolved id
+  from `modelUsage`. That's how the mappings added on 2026-09-25 were verified.
 - **`stream_options.include_usage` support** — currently not implemented; usage is only
   returned in non-streaming responses, matching baseline OpenAI behavior but not the
   opt-in extension some clients use.

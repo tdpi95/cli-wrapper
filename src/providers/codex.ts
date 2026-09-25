@@ -1,27 +1,47 @@
 import { spawnManaged, timeoutErrorFor } from "../process/run.js";
 import { codexProxyBypassEnv } from "../process/codexProxyBypass.js";
 import { runAppServerNonStreaming, runAppServerStreaming } from "../process/codexAppServer.js";
+import { writeImagesToTempDir } from "../attachments.js";
 import { CliExecutionError } from "../errors.js";
 import { getSettings } from "../config.js";
 import type { CliProvider, RunOptions, RunResult, StreamChunk, Usage } from "./types.js";
 
 const CMD = "codex";
 
-function buildPrompt(opts: RunOptions): string {
+/**
+ * Newer codex models (verified live: gpt-5.6-sol on codex-cli 0.157.0 with
+ * web search on) can emit more than one agent_message per turn — a short
+ * preamble ("I'll verify this against ..."), then a tool call, then the
+ * real answer. Every message is kept, joined with this, rather than keeping
+ * only the last one: streaming can't know which message is final until the
+ * turn ends (exec's JSONL carries no phase marker), and non-streaming
+ * matches it so the two modes never disagree. Same separator
+ * process/codexAppServer.ts uses. See AGENTS.md's "Multiple agent messages
+ * per turn".
+ */
+const AGENT_MESSAGE_SEPARATOR = "\n\n";
+
+function buildPrompt(opts: RunOptions, imageCount: number): string {
   // codex has no system-prompt flag, so prepend a labeled block instead.
   const parts: string[] = [];
   if (opts.systemPrompt.trim() !== "") {
     parts.push(`System: ${opts.systemPrompt}`);
   }
   parts.push(opts.transcript);
+  // `--image` attaches images out-of-band, not at their position in the
+  // prompt — the transcript's "[Image N: ...]" labels are the only link
+  // between the two, so say how they line up.
+  if (imageCount > 0) {
+    parts.push(`(The ${imageCount === 1 ? "image is" : `${imageCount} images are`} attached to this message, in the same order as the [Image N] labels above.)`);
+  }
   parts.push("Assistant:");
   return parts.join("\n\n");
 }
 
-function args(opts: RunOptions): string[] {
+function args(opts: RunOptions, imagePaths: string[]): string[] {
   const argv = [
     "exec",
-    buildPrompt(opts),
+    buildPrompt(opts, imagePaths.length),
     "--json",
     "--sandbox",
     "read-only",
@@ -54,6 +74,10 @@ function args(opts: RunOptions): string[] {
     // supports it isn't re-validated here — same laissez-faire approach as
     // cliModel (gotcha #4).
     ...(opts.enableWebSearch ? ["-c", "tools.web_search=true"] : []),
+    // One `--image` per file, not one `--image a b c`: the flag is variadic,
+    // so this keeps each value unambiguous. Always our own temp paths (see
+    // attachments.ts's writeImagesToTempDir), never client-supplied ones.
+    ...imagePaths.flatMap((p) => ["--image", p]),
     "-m",
     opts.cliModel,
     "-C",
@@ -76,13 +100,13 @@ function usageFrom(raw: { input_tokens?: number; output_tokens?: number } | unde
  * and non-streaming (no per-mode flag exists) — only how the caller consumes
  * agent_message events differs, so both entry points funnel through this.
  */
-async function* consume(opts: RunOptions): AsyncIterable<
+async function* consume(opts: RunOptions, imagePaths: string[]): AsyncIterable<
   | { type: "message"; text: string }
   | { type: "reasoning"; text: string }
   | { type: "usage"; usage: Usage }
   | { type: "warning"; message: string }
 > {
-  const managed = spawnManaged(CMD, args(opts), {
+  const managed = spawnManaged(CMD, args(opts, imagePaths), {
     cwd: opts.workdir,
     timeoutMs: opts.timeoutMs,
     signal: opts.signal,
@@ -133,16 +157,20 @@ async function* consume(opts: RunOptions): AsyncIterable<
  * added — see process/codexAppServer.ts for the alternative and AGENTS.md's
  * "Warm codex app-server pool" section for why it's opt-in, not default).
  */
-async function runExecNonStreaming(opts: RunOptions): Promise<RunResult> {
-  let text: string | undefined;
+async function runExecNonStreaming(opts: RunOptions, imagePaths: string[]): Promise<RunResult> {
+  let sawMessage = false;
+  const messageParts: string[] = [];
   const reasoningParts: string[] = [];
   let usage: Usage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
   let lastWarning: string | undefined;
   let exitError: unknown;
 
   try {
-    for await (const evt of consume(opts)) {
-      if (evt.type === "message") text = evt.text;
+    for await (const evt of consume(opts, imagePaths)) {
+      if (evt.type === "message") {
+        sawMessage = true;
+        if (evt.text) messageParts.push(evt.text);
+      }
       else if (evt.type === "reasoning") reasoningParts.push(evt.text);
       else if (evt.type === "usage") usage = evt.usage;
       else if (evt.type === "warning") lastWarning = evt.message;
@@ -151,29 +179,33 @@ async function runExecNonStreaming(opts: RunOptions): Promise<RunResult> {
     exitError = err;
   }
 
-  if (text !== undefined) {
-    return { text, reasoningText: reasoningParts.length ? reasoningParts.join("\n\n") : undefined, usage, stopReason: "stop" };
+  if (sawMessage) {
+    return { text: messageParts.join(AGENT_MESSAGE_SEPARATOR), reasoningText: reasoningParts.length ? reasoningParts.join("\n\n") : undefined, usage, stopReason: "stop" };
   }
   if (exitError) throw exitError;
   throw new CliExecutionError(lastWarning ?? "codex produced no output");
 }
 
-async function* runExecStreaming(opts: RunOptions): AsyncIterable<StreamChunk> {
+async function* runExecStreaming(opts: RunOptions, imagePaths: string[]): AsyncIterable<StreamChunk> {
   let sawMessage = false;
+  let emittedText = false;
   let usage: Usage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
   let lastWarning: string | undefined;
   let roleSent = false;
 
   try {
-    for await (const evt of consume(opts)) {
+    for await (const evt of consume(opts, imagePaths)) {
       if (evt.type === "message") {
         if (!roleSent) {
           roleSent = true;
           yield { kind: "role" };
         }
         sawMessage = true;
-        // No token-level deltas from codex — emit the whole message as one chunk.
-        yield { kind: "delta", text: evt.text };
+        if (!evt.text) continue;
+        // No token-level deltas from codex — emit the whole message as one
+        // chunk, separated from any earlier message in this turn.
+        yield { kind: "delta", text: emittedText ? AGENT_MESSAGE_SEPARATOR + evt.text : evt.text };
+        emittedText = true;
       } else if (evt.type === "reasoning") {
         if (!evt.text) continue; // defensive: skip an empty summary chunk, same as claudePool.ts
         if (!roleSent) {
@@ -206,11 +238,33 @@ async function* runExecStreaming(opts: RunOptions): AsyncIterable<StreamChunk> {
 // app-server pool" section). Read fresh per request, same "settings read
 // live" convention as everywhere else, so flipping the toggle on /settings
 // takes effect on the very next request with no restart.
+//
+// Both paths take images only by file path, so any image attachments are
+// written to a private temp dir first and removed once the turn is over.
+// PDFs never reach here: neither path has any document input, so
+// supportedAttachmentKinds makes chat.ts reject them up front.
 export const codexProvider: CliProvider = {
-  runNonStreaming(opts: RunOptions): Promise<RunResult> {
-    return getSettings().codexUseWarmPool ? runAppServerNonStreaming(opts) : runExecNonStreaming(opts);
+  supportedAttachmentKinds: new Set(["image"]),
+  async runNonStreaming(opts: RunOptions): Promise<RunResult> {
+    const images = await writeImagesToTempDir(opts.attachments.filter((a) => a.kind === "image"));
+    try {
+      return await (getSettings().codexUseWarmPool ? runAppServerNonStreaming(opts, images.paths) : runExecNonStreaming(opts, images.paths));
+    } finally {
+      await images.cleanup();
+    }
   },
-  runStreaming(opts: RunOptions): AsyncIterable<StreamChunk> {
-    return getSettings().codexUseWarmPool ? runAppServerStreaming(opts) : runExecStreaming(opts);
+  async *runStreaming(opts: RunOptions): AsyncIterable<StreamChunk> {
+    let images;
+    try {
+      images = await writeImagesToTempDir(opts.attachments.filter((a) => a.kind === "image"));
+    } catch (err) {
+      yield { kind: "error", message: err instanceof Error ? err.message : String(err) };
+      return;
+    }
+    try {
+      yield* getSettings().codexUseWarmPool ? runAppServerStreaming(opts, images.paths) : runExecStreaming(opts, images.paths);
+    } finally {
+      await images.cleanup();
+    }
   },
 };

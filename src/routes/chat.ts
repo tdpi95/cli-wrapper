@@ -60,11 +60,23 @@ export function chatRouter(): Router {
         reasoningEffort = requested as ReasoningEffort;
       }
 
-      const { systemPrompt, transcript } = flattenMessages(body.messages as ChatMessage[]);
+      // Reads (allowlisted) local files and decodes base64 here, so a bad
+      // attachment is a 400 before any CLI process is touched.
+      const { systemPrompt, transcript, segments, attachments } = flattenMessages(body.messages as ChatMessage[], {
+        localFileRoots: settings.localFileRoots,
+      });
+      // The transcript carries "[Image N: ...]" labels, never attachment
+      // bytes, so logging it doesn't dump base64 into the activity log.
       if (captureContent) {
         inputForLog = systemPrompt.trim() !== "" ? `System: ${systemPrompt}\n\n${transcript}` : transcript;
       }
       const provider = getProvider(mapping.provider);
+      const unsupported = attachments.find((a) => !provider.supportedAttachmentKinds.has(a.kind));
+      if (unsupported) {
+        throw new ValidationError(
+          `Model "${body.model}" (${mapping.provider}) can't take ${unsupported.kind === "pdf" ? "PDF" : unsupported.kind} attachments ("${unsupported.filename}") — supported: ${[...provider.supportedAttachmentKinds].join(", ")}, plus text files`
+        );
+      }
 
       // Note: `req` (a Readable) emits 'close' as soon as its body has been
       // fully consumed by express.json() — that's unrelated to the client's
@@ -83,6 +95,8 @@ export function chatRouter(): Router {
         enableWebSearch: mapping.enableWebSearch,
         systemPrompt,
         transcript,
+        segments,
+        attachments,
         timeoutMs: settings.cliTimeoutMs,
         workdir: path.resolve(process.cwd(), settings.cliWorkdir),
         signal: controller.signal,

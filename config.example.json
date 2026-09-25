@@ -8,7 +8,8 @@
     "logFilePath": null,
     "codexBypassProxyForOpenAI": false,
     "codexUseWarmPool": false,
-    "codexPoolSize": 2
+    "codexPoolSize": 2,
+    "localFileRoots": []
   },
   "models": [
     {
@@ -33,17 +34,17 @@
       "description": "Claude Sonnet with the built-in WebSearch tool enabled"
     },
     {
-      "id": "gpt-5.5",
+      "id": "gpt-5.6-sol",
       "provider": "codex",
-      "cliModel": "gpt-5.5",
-      "description": "GPT-5.5 via the Codex CLI"
+      "cliModel": "gpt-5.6-sol",
+      "description": "GPT-5.6-Sol via the Codex CLI"
     },
     {
-      "id": "gpt-5.5-websearch",
+      "id": "gpt-5.6-sol-websearch",
       "provider": "codex",
-      "cliModel": "gpt-5.5",
+      "cliModel": "gpt-5.6-sol",
       "enableWebSearch": true,
-      "description": "GPT-5.5 via the Codex CLI with its built-in web_search tool enabled"
+      "description": "GPT-5.6-Sol via the Codex CLI with its built-in web_search tool enabled"
     }
   ]
 }

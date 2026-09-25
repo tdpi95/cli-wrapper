@@ -17,15 +17,20 @@ export const CLI_WRAPPER_HOME_DIR = path.join(os.homedir(), ".cli-wrapper");
 export type ProviderName = "claude" | "codex";
 
 /**
- * Shared across both providers even though neither CLI accepts all six —
- * claude's `--effort` takes low/medium/high/xhigh/max (no "minimal"), codex's
- * `-c model_reasoning_effort=` takes minimal/low/medium/high (no
- * xhigh/max). Same laissez-faire approach as `cliModel` (see AGENTS.md
- * gotcha #4): this only catches typos, not provider/account-invalid values —
- * picking a value the mapping's own provider doesn't support surfaces as a
- * CLI-level error at request time, not a config-save-time rejection.
+ * Shared across both providers even though neither CLI accepts all seven —
+ * claude's `--effort` takes low/medium/high/xhigh/max (as of Claude Code
+ * 2.1.280). codex's accepted set is per *model*, not per CLI: as of
+ * codex-cli 0.157.0, `model/list` reports low..ultra for gpt-6-astra/-sol and
+ * gpt-5.6-sol/-terra, low..max for the -luna models, and low..xhigh for
+ * gpt-5.5. No current codex model lists "minimal" — it's kept only because
+ * older codex versions/models took it and existing configs may still say it.
+ * Same laissez-faire approach as `cliModel` (see AGENTS.md gotcha #4): this
+ * only catches typos, not provider/model-invalid values. A value the
+ * mapping's own model doesn't support is silently downgraded by the CLI, not
+ * rejected: claude ignores it with a stderr warning and runs at its default
+ * effort, and codex adjusts it (verified live: `ultra` on gpt-5.5 succeeds).
  */
-export const REASONING_EFFORT_VALUES = ["minimal", "low", "medium", "high", "xhigh", "max"] as const;
+export const REASONING_EFFORT_VALUES = ["minimal", "low", "medium", "high", "xhigh", "max", "ultra"] as const;
 export type ReasoningEffort = (typeof REASONING_EFFORT_VALUES)[number];
 
 export interface ModelMapping {
@@ -172,6 +177,15 @@ export interface WrapperSettings {
    * throughput knob. Ignored entirely when codexUseWarmPool is false.
    */
   codexPoolSize: number;
+  /**
+   * Absolute directories a /v1 request may reference local files under, as
+   * `image_url.url` paths or `file://` URLs (see attachments.ts). Symlinks
+   * are resolved before the check. Empty (the default) disables local paths
+   * entirely — only inline base64 attachments work. Opt-in because it lets
+   * anyone holding the API key have the server read those files and hand
+   * them to the model, which can echo them straight back.
+   */
+  localFileRoots: string[];
 }
 
 export interface WrapperConfig {
@@ -190,4 +204,5 @@ export const DEFAULT_SETTINGS: WrapperSettings = {
   codexBypassProxyForOpenAI: false,
   codexUseWarmPool: false,
   codexPoolSize: 2,
+  localFileRoots: [],
 };

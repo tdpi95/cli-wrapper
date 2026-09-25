@@ -174,7 +174,8 @@
         align-items: stretch;
       }
       input,
-      select {
+      select,
+      textarea {
         padding: 0.5rem 0.6rem;
         font-size: 0.88rem;
         border: 1px solid var(--border);
@@ -185,7 +186,8 @@
         font-family: inherit;
       }
       input:focus,
-      select:focus {
+      select:focus,
+      textarea:focus {
         outline: 2px solid color-mix(in srgb, var(--accent) 50%, transparent);
         outline-offset: 1px;
         border-color: var(--accent);
@@ -498,6 +500,23 @@
             <span class="hint">(only used when the pool above is on)</span></span
           >
           <input type="number" name="codexPoolSize" min="1" step="1" />
+        </label>
+        <label class="full"
+          ><span
+            >Local file roots for attachments
+            <span class="hint"
+              >(one absolute directory per line; requests may attach images/files
+              by local path only under these. Blank = local paths disabled,
+              base64 attachments only. Anyone with the API key can have the
+              model read files here.)</span
+            ></span
+          >
+          <textarea
+            name="localFileRoots"
+            class="mono"
+            rows="3"
+            placeholder="e.g. /home/me/shared-images"
+          ></textarea>
         </label>
         <div class="full actions">
           <button type="submit" class="primary">Save settings</button>
@@ -818,6 +837,7 @@
         settingsForm.codexBypassProxyForOpenAI.checked = !!s.codexBypassProxyForOpenAI;
         settingsForm.codexUseWarmPool.checked = !!s.codexUseWarmPool;
         settingsForm.codexPoolSize.value = s.codexPoolSize;
+        settingsForm.localFileRoots.value = (s.localFileRoots || []).join("\n");
       }
 
       async function refreshSettings() {
@@ -852,6 +872,11 @@
           codexBypassProxyForOpenAI: fd.get("codexBypassProxyForOpenAI") === "on",
           codexUseWarmPool: fd.get("codexUseWarmPool") === "on",
           codexPoolSize: Number(fd.get("codexPoolSize")),
+          localFileRoots: fd
+            .get("localFileRoots")
+            .split("\n")
+            .map((r) => r.trim())
+            .filter(Boolean),
         };
         try {
           const updated = await api("/api/settings/config", {
@@ -885,9 +910,13 @@
       // (typo protection only, not provider-correctness — same as cliModel), so
       // this is just the dropdown showing sensible options per provider, not a
       // hard client-side restriction.
+      // Union across each CLI's current models (codex's set varies per model:
+      // gpt-5.5 stops at xhigh, the -luna models at max). "minimal" is gone
+      // from every current codex model; a mapping that still has it is kept
+      // via allowExtra below rather than silently dropped.
       const REASONING_EFFORT_BY_PROVIDER = {
         claude: ["low", "medium", "high", "xhigh", "max"],
-        codex: ["minimal", "low", "medium", "high"],
+        codex: ["low", "medium", "high", "xhigh", "max", "ultra"],
       };
 
       /**
