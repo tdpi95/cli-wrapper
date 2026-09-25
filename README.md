@@ -6,6 +6,14 @@ Point any OpenAI SDK or tool at it and it just works. Model calls go through the
 key. Your apps only need this wrapper's own API key, which it generates on first run. Chat
 only: the CLIs can't edit files or run commands through it.
 
+> [!WARNING]
+> **Experimental, for personal use only.** This is an unofficial side project, not
+> affiliated with or endorsed by Anthropic or OpenAI. Use it only with your own account,
+> for yourself. Don't sell access, share your `claude`/`codex` login through it, or run it
+> as a public service. That can violate Anthropic's and OpenAI's terms of service and get
+> your account suspended. You're responsible for following the terms of the accounts you
+> use. Provided as-is, with no warranty.
+
 ## Quick start (5 minutes)
 
 ### 1. Check you have the prerequisites
