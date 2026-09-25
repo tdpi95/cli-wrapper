@@ -47,10 +47,16 @@ jobs:
       - name: Pack
         run: npm pack
 
+      # Also attach an unversioned copy, so the README can use a stable
+      # .../releases/latest/download/cli-wrapper.tgz install URL that always
+      # resolves to the newest release.
+      - name: Add fixed-name copy
+        run: cp cli-wrapper-*.tgz cli-wrapper.tgz
+
       - name: Create GitHub release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release create "$GITHUB_REF_NAME" cli-wrapper-*.tgz \
+          gh release create "$GITHUB_REF_NAME" cli-wrapper-*.tgz cli-wrapper.tgz \
             --title "$GITHUB_REF_NAME" \
             --generate-notes

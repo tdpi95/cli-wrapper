@@ -1,58 +1,35 @@
 # cli-wrapper
 
-An OpenAI-compatible HTTP API backed by the `claude` (Claude Code) and `codex` CLIs, run as
-chat-only subprocesses (no file/shell tool access). Point any OpenAI-compatible SDK or tool
-at it and it just works, using whichever `claude`/`codex` login is already sitting on the
-host — no separate API key to provision for the model calls themselves.
+Use your logged-in `claude` (Claude Code) and `codex` CLIs as an **OpenAI-compatible API**.
+Point any OpenAI SDK or tool at it and it just works — no separate model API key needed, it
+uses whatever `claude`/`codex` login is already on the machine. Chat only: the CLIs can't
+edit files or run commands through it.
 
-- **Drop-in OpenAI API** — `/v1/chat/completions` (streaming + non-streaming) and
-  `/v1/models`, backed by a routing table you define (`config.json`'s `models`).
-- **Live, no-restart settings page** at `/settings` — model routing, API key, timeout,
-  working directory, and activity log, all editable without touching env vars or restarting
-  (open to anyone who can reach it, by design — see the callout below). It listens on its
-  own port, separate from the API, so exposing one doesn't automatically expose the other.
-- **Warm process pool for `claude`** — reuses already-running `claude` processes across
-  requests instead of paying a full CLI boot every call, while staying fully stateless from
-  the client's point of view. Live pool status (busy/idle workers, queued requests) is
-  viewable on the settings page.
-- **Optional warm pool for `codex`** (opt-in, off by default) — routes requests through a
-  small pool of long-lived `codex app-server` daemons instead of spawning a fresh `codex`
-  process every call. Each request still gets its own isolated, ephemeral turn — see
-  "Configuration" below.
-- **Reasoning effort control** — set a default per model mapping, optionally let a request's
-  own `reasoning_effort` field override it, and get any reasoning/thinking content back as
-  `reasoning_content`.
-- **Image and file attachments** — OpenAI-style `image_url` and `file` content parts, sent
-  as base64 or (under an allowlist) as a local file path. Images work with both CLIs, PDFs
-  with `claude` only, and text files are inlined for both. See "Attachments" under Usage.
-- **Optional built-in web search** — per model mapping, grant `claude`'s `WebSearch` tool or
-  `codex`'s `web_search` tool, without opening up general shell/file tool access.
-- **Recent-activity log** — the last 200 requests, viewable on the settings page, with
-  optional full prompt/response capture and optional disk persistence.
+## Quick start (5 minutes)
 
-## Contents
+### 1. Check you have the prerequisites
 
-[Prerequisites](#prerequisites) · [Setup](#setup) · [Configuration](#configuration) ·
-[Usage](#usage) · [Install](#install) ·
-[Notes / limitations](#notes--limitations) · [Environment variables](#environment-variables) ·
-[More docs](#more-docs)
+- **Node.js** (v24 tested) — `node --version`
+- **`claude` and/or `codex` CLI, installed and logged in.** You only need the one(s) you
+  plan to use. Check with `claude -p "hi"` / `codex exec "hi"` — if those answer, you're set.
 
-## Prerequisites
+### 2. Install
 
-- Node.js (tested on v24.11.1)
-- `claude` and `codex` CLIs installed and already logged in (this wrapper inherits their
-  ambient auth — it does not manage API keys itself)
-
-## Setup
-
-```sh
-npm install
-npm run dev
+```bash
+npm install -g https://github.com/tdpi95/cli-wrapper/releases/latest/download/cli-wrapper.tgz
 ```
 
-That's it — no `.env` edits required. On first run, `config.json` is seeded from
-`config.example.json` and a random API key is generated for you; the server prints it once
-to the console, e.g.:
+This always installs the newest release. To pin a specific version instead, use its file
+from the [Releases page](https://github.com/tdpi95/cli-wrapper/releases), e.g.
+`.../releases/download/v0.2.1/cli-wrapper-0.2.1.tgz`.
+
+### 3. Run it
+
+```bash
+cli-wrapper
+```
+
+On first run it creates `~/.cli-wrapper/config.json` and prints a generated API key:
 
 ```
   Generated a new API key for /v1/*: 3f9c2a1e7b...
@@ -62,127 +39,185 @@ cli-wrapper API listening on http://localhost:8869
 settings (no auth required): http://localhost:8868/settings
 ```
 
-Note the two different ports: the settings page defaults to **8868**, the OpenAI API to
-**8869** — they're two separate listeners, on purpose (see "Configuration" below and the
-callout further down).
+Two ports: **8869** is the API your apps talk to, **8868** is the settings page for you.
 
-You can also view/change most settings any time at `/settings` — see "Configuration" below.
+### 4. Configure in the browser
 
-> **Check your model ids before relying on the seed config.** `cliModel` values are passed
-> straight through to `--model`/`-m`, and which ones work depends on your login (e.g. a
-> ChatGPT-plan Codex account may reject `gpt-5-codex` with "not supported when using Codex
-> with a ChatGPT account" — check `~/.codex/config.toml` or `codex features list` for what's
-> actually available to you, and `claude --model` aliases like `sonnet`/`opus` for Claude).
+Open **http://localhost:8868/settings**. Everything saves live, no restart needed:
 
-## Configuration
+1. **Copy the API key and the API base URL** — that's all your apps need.
+2. **Check the model routing table.** It comes pre-filled with example models. Delete the
+   ones for a CLI you don't use, and make sure each `cliModel` is one your account can
+   actually use (e.g. `sonnet`/`opus` for claude; for codex, the model in
+   `~/.codex/config.toml` is a safe bet). The `id` column is the model name your apps send.
 
-Two ports, by design:
+### 5. Test it
 
-| Surface                                   | Default port | Configured via                                                            |
-| ----------------------------------------- | ------------ | ------------------------------------------------------------------------- |
-| Settings (`/settings`, `/api/settings/*`) | `8868`       | env `SETTINGS_PORT` only — not in `config.json` (see below)               |
-| OpenAI API (`/v1/*`)                      | `8869`       | `config.json`'s `settings.apiPort`, or env `PORT` to override for one run |
-
-Splitting them means the unauthenticated settings surface (see the callout below) can be
-bound/exposed independently of the API — e.g. keep settings on localhost only while the API is reachable more broadly.
-
-Everything below lives in `config.json` and is editable live from `http://localhost:8868/settings`
-— no restart needed, except **API port**:
-
-- **API key** — the bearer token required on `/v1/*`. Leave it blank on the settings page
-  to disable auth on `/v1/*` entirely (an explicit, visible opt-out — the server never
-  starts with a blank key on its own; see the callout below about `/settings` itself).
-- **API port**, **CLI timeout**, **CLI working directory** (defaults to
-  `~/.cli-wrapper/workspace` — outside any project checkout, deliberately, so the CLIs don't
-  auto-discover and leak a project's own `CLAUDE.md`/`AGENTS.md` into chat completions).
-- **Activity log**: whether full prompt/response text is captured, and an optional file
-  path to persist the last 200 entries to disk (see "Recent activity" below) — off
-  (in-memory only) by default; a relative path here resolves against `~/.cli-wrapper/`, not
-  wherever `cli-wrapper` happens to be run from.
-- **Codex warm pool** (`codexUseWarmPool`, off by default) and **pool size**
-  (`codexPoolSize`, default `2`) — see "Codex warm pool (experimental)" below.
-- **Local file roots** (`localFileRoots`, empty by default) — absolute directories that
-  requests may attach files from by path (see "Attachments" below). Empty means local
-  paths are rejected and only base64 attachments work.
-
-### Model routing
-
-The `models` array in `config.json` (or the "Model routing" table on `/settings`) is what
-maps a client-facing `model` name to an actual CLI invocation:
-
-| Field                          | Required | Meaning                                                                                                                                                                                                                                                                             |
-| ------------------------------ | -------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `id`                           | yes      | The name clients send as `model` in their request.                                                                                                                                                                                                                                  |
-| `provider`                     | yes      | `claude` or `codex`.                                                                                                                                                                                                                                                                |
-| `cliModel`                     | yes      | Passed straight through to `--model`/`-m` — e.g. `sonnet`/`opus` for claude, `gpt-5.6-sol` for codex. Account-dependent; see the callout above.                                                                                                                                         |
-| `extraFlags`                   | no       | Raw argv appended verbatim to the CLI invocation — an escape hatch for anything not covered by the fields below.                                                                                                                                                                    |
-| `reasoningEffort`              | no       | Default reasoning effort: `minimal` / `low` / `medium` / `high` / `xhigh` / `max` / `ultra`. Not every value is valid for every model (see "Reasoning effort and content" below). An unsupported one isn't rejected: the CLI silently falls back (claude to its default effort, codex to a level the model supports). |
-| `allowReasoningEffortOverride` | no       | Let a request's own `reasoning_effort` field override the default above for that call. Off by default.                                                                                                                                                                              |
-| `enableWebSearch`              | no       | Grant this mapping's CLI its built-in web search tool — `claude`'s `WebSearch`, or `codex`'s `web_search`. See "Web search tool" below.                                                                                                                                             |
-| `description`                  | no       | Free text, shown on the settings page only.                                                                                                                                                                                                                                         |
-
-`config.example.json` has working examples of each of these, including a plain mapping per
-provider and one web-search-enabled mapping per provider.
-
-### Codex warm pool (experimental)
-
-By default, every `codex`-routed request spawns a fresh `codex exec` process (no shared
-state between requests, but a full CLI-boot cost every call). Turning on `codexUseWarmPool`
-on the settings page (or in `config.json`) instead routes requests through a small pool of
-long-lived `codex app-server` daemons — `codexPoolSize` (default `2`) controls how many.
-Each request still gets its own isolated, ephemeral thread/turn on whichever daemon is least
-busy, so client-visible behavior (statelessness, no cross-request bleed) is unchanged; only
-the process-boot cost is amortized, the same idea as the `claude` pool above.
-
-This is opt-in and marked experimental because `codex app-server`'s JSON-RPC protocol has no
-documented backwards-compatibility guarantee across `codex` CLI versions (the subcommand
-itself is still labeled `[experimental]` in `codex --help`) — a `codex` upgrade could change
-it without warning. Turning the setting off does not stop already-running daemons; they sit
-idle until the server restarts. See `AGENTS.md`'s "Warm codex app-server pool" section for
-the full design, verified-live numbers, and gotchas.
-
-Only three things remain env vars — see `.env.example`:
-
-- `CONFIG_PATH` — needed before `config.json` can even be located. Defaults to
-  `./config.json` if one already exists there and looks valid, else
-  `~/.cli-wrapper/config.json` (see "Config path defaults to the home directory" in
-  `AGENTS.md`).
-- `SETTINGS_PORT` (default `8868`) — the settings surface's own port; deliberately not a
-  `config.json` field (see "Configuration" above).
-- `PORT` — optional, overrides `config.json`'s `apiPort` for this run only (e.g. for
-  containers/process managers that inject it themselves); never affects `SETTINGS_PORT`.
-
-Editing `config.json` directly also works; it's read fresh on every request, same as the
-model routing table.
-
-> **`/settings` has no authentication, by design.** Anyone who can reach its port can open
-> it, read/change the model routing, read/change every setting above — including the API
-> key that guards `/v1/*` — and (if content capture is on) read full past prompts/responses
-> in the activity log. This is an internal/personal-use tool. It listening on its own port
-> (see "Configuration" above) means you _can_ expose the API more broadly while keeping this
-> port to localhost/a private interface — but that's a mitigation, not a fix: still put this
-> port itself behind a network boundary or reverse-proxy with its own auth if it's ever
-> reachable beyond a trusted host.
-
-## Usage
-
-`/v1/chat/completions` and `/v1/models` — on the **API port** (`8869` by default) — require
-`Authorization: Bearer <apiKey>` (the key shown on `/settings`), unless you've blanked it out
-there. `/settings` and `/api/settings/*` — on the separate **settings port** (`8868` by
-default) — never require auth.
-
-```sh
-curl http://localhost:8869/v1/models \
-  -H "Authorization: Bearer $API_KEY"
-
+```bash
 curl http://localhost:8869/v1/chat/completions \
-  -H "Authorization: Bearer $API_KEY" \
+  -H "Authorization: Bearer YOUR_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{"model":"claude-sonnet-5","messages":[{"role":"user","content":"Say hi"}]}'
 ```
 
-Streaming works the same way with `"stream": true` — responses are Server-Sent Events
-ending in `data: [DONE]`.
+### 6. Point your app at it
+
+Anything that speaks the OpenAI API works. Set the base URL to `http://localhost:8869/v1`
+and the API key to the one from step 4:
+
+```python
+from openai import OpenAI
+
+client = OpenAI(base_url="http://localhost:8869/v1", api_key="YOUR_API_KEY")
+reply = client.chat.completions.create(
+    model="claude-sonnet-5",
+    messages=[{"role": "user", "content": "Say hi"}],
+)
+print(reply.choices[0].message.content)
+```
+
+Many tools also pick these up from the environment:
+
+```bash
+export OPENAI_BASE_URL=http://localhost:8869/v1 OPENAI_API_KEY=YOUR_API_KEY
+```
+
+Done. Everything below is optional.
+
+## Everyday tasks
+
+| I want to...                  | Do this                                                                                      |
+| ----------------------------- | -------------------------------------------------------------------------------------------- |
+| Add or rename a model         | Settings page → Model routing → add a row (or edit `models` in `~/.cli-wrapper/config.json`) |
+| Change / disable the API key  | Settings page → API key (blank = no auth on the API)                                         |
+| Change the API port           | Settings page → API port, then restart `cli-wrapper`                                         |
+| Change the settings page port | `SETTINGS_PORT=9000 cli-wrapper`                                                             |
+| Enable web search for a model | Settings page → Model routing → edit the row → tick "Enable web search"                      |
+| Turn on reasoning / thinking  | Settings page → Model routing → edit the row → "Default reasoning effort"                    |
+| Stop prompts being logged     | Settings page → untick "Store full prompt/response text in the activity log"                 |
+| Upgrade                       | Re-run the install command from step 2. Your config is kept.                                 |
+| Uninstall                     | `npm uninstall -g cli-wrapper` (then delete `~/.cli-wrapper/` to remove config too)          |
+
+## Troubleshooting
+
+| Symptom                                                                     | Fix                                                                                                                   |
+| --------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| `401` from the API                                                          | Wrong or missing `Authorization: Bearer <key>` — copy the key from the settings page.                                 |
+| `404` on `/v1/...` or on `/settings`                                        | Wrong port: the API is on **8869**, settings on **8868**.                                                             |
+| `Unknown model: ...` (404)                                                  | The `model` you sent isn't an `id` in the model routing table.                                                        |
+| Error like `model is not supported when using Codex with a ChatGPT account` | That `cliModel` isn't available on your login — pick another (see step 4).                                            |
+| `EADDRINUSE` on startup                                                     | Port taken. Change the API port on the settings page, or run with `PORT=... SETTINGS_PORT=... cli-wrapper`.           |
+| codex requests take ~20s behind a corporate proxy                           | Settings page → tick "Bypass HTTP proxy for OpenAI hosts" (details in [Codex behind a proxy](#codex-behind-a-proxy)). |
+| Can't find the config file                                                  | The startup log prints `config: <path>`. Usually `~/.cli-wrapper/config.json`.                                        |
+
+> **Security:** the settings page has **no login**, by design — anyone who can reach port
+> 8868 can read and change everything, including the API key and (if logging is on) past
+> conversations. Keep that port on localhost or behind your own firewall/auth. See
+> [Security notes](#security-notes).
+
+---
+
+# Reference
+
+Details for when you need them.
+
+- [Features](#features)
+- [Configuration](#configuration) · [Model routing](#model-routing) ·
+  [Environment variables](#environment-variables)
+- [Using the API](#using-the-api) · [Attachments](#attachments)
+- [Settings page panels](#settings-page-panels)
+- [Codex warm pool (experimental)](#codex-warm-pool-experimental) ·
+  [Codex behind a proxy](#codex-behind-a-proxy)
+- [Security notes](#security-notes)
+- [Notes / limitations](#notes--limitations)
+- [Building from source](#building-from-source)
+- [More docs](#more-docs)
+
+## Features
+
+- **Drop-in OpenAI API** — `/v1/chat/completions` (streaming + non-streaming) and
+  `/v1/models`, backed by a routing table you define.
+- **Live settings page** — model routing, API key, timeout, working directory, activity log,
+  all editable without restarting. On its own port, so exposing the API doesn't expose it.
+- **Warm process pool for `claude`** — reuses running `claude` processes instead of booting
+  one per request, while every request still starts from a blank conversation.
+- **Optional warm pool for `codex`** (opt-in) — long-lived `codex app-server` daemons
+  instead of a fresh `codex` process per call.
+- **Reasoning effort control** — per model default, optional per-request override, and
+  thinking content returned as `reasoning_content`.
+- **Image and file attachments** — OpenAI-style `image_url` and `file` content parts.
+- **Optional built-in web search** per model, without opening up shell/file tools.
+- **Recent-activity log** — last 200 requests, optional content capture and disk persistence.
+
+## Configuration
+
+Everything lives in `config.json` (usually `~/.cli-wrapper/config.json`) and is editable
+live at `http://localhost:8868/settings`. The file is read fresh on every request, so
+editing it by hand works too. Only **API port** needs a restart.
+
+| Setting                                                          | Default                     | Meaning                                                                                                                                 |
+| ---------------------------------------------------------------- | --------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
+| API key (`apiKey`)                                               | random, generated first run | Bearer token required on `/v1/*`. Blank disables auth on `/v1/*` (never happens on its own).                                            |
+| API port (`apiPort`)                                             | `8869`                      | Port for `/v1/*`. Restart required.                                                                                                     |
+| CLI timeout (`cliTimeoutMs`)                                     | `300000` (5 min)            | Hard limit per request; the CLI process is killed after this.                                                                           |
+| CLI working directory (`cliWorkdir`)                             | `~/.cli-wrapper/workspace`  | Where the CLIs run. Kept outside any project so they don't pick up a project's `CLAUDE.md`/`AGENTS.md`.                                 |
+| Store full prompt/response text (`logCaptureContent`)            | on                          | Whether the activity log keeps request/response content, or only metadata.                                                              |
+| Log file path (`logFilePath`)                                    | none (in memory)            | Persist the last 200 log entries to disk. Relative paths resolve against `~/.cli-wrapper/`.                                             |
+| Bypass HTTP proxy for OpenAI hosts (`codexBypassProxyForOpenAI`) | off                         | See [Codex behind a proxy](#codex-behind-a-proxy).                                                                                      |
+| Codex warm pool (`codexUseWarmPool`, `codexPoolSize`)            | off, `2`                    | See [Codex warm pool](#codex-warm-pool-experimental).                                                                                   |
+| Local file roots (`localFileRoots`)                              | empty (disabled)            | Absolute directories requests may attach files from by path. Empty means only base64 attachments work. See [Attachments](#attachments). |
+
+The settings surface and the API use **two separate ports, on purpose**: the settings page
+has no auth, so you can keep it on localhost while exposing the API more widely.
+
+| Surface                                   | Default port | Configured via                                                            |
+| ----------------------------------------- | ------------ | ------------------------------------------------------------------------- |
+| Settings (`/settings`, `/api/settings/*`) | `8868`       | env `SETTINGS_PORT` only — not in `config.json`                           |
+| OpenAI API (`/v1/*`)                      | `8869`       | `config.json`'s `settings.apiPort`, or env `PORT` to override for one run |
+
+### Model routing
+
+The `models` array (the "Model routing" table on `/settings`) maps a client-facing `model`
+name to a CLI invocation:
+
+| Field                          | Required | Meaning                                                                                                                                                                                                                                            |
+| ------------------------------ | -------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `id`                           | yes      | The name clients send as `model`.                                                                                                                                                                                                                  |
+| `provider`                     | yes      | `claude` or `codex`.                                                                                                                                                                                                                               |
+| `cliModel`                     | yes      | Passed straight to `--model`/`-m` — e.g. `sonnet`/`opus` for claude, `gpt-5.6-sol` for codex. Depends on your login: not every account can use every model.                                                                                        |
+| `extraFlags`                   | no       | Raw argv appended verbatim to the CLI invocation — an escape hatch.                                                                                                                                                                                |
+| `reasoningEffort`              | no       | Default effort: `minimal` / `low` / `medium` / `high` / `xhigh` / `max` / `ultra`. Not every value suits every model; an unsupported one isn't rejected, the CLI silently falls back (claude to its default, codex to a level the model supports). |
+| `allowReasoningEffortOverride` | no       | Let a request's `reasoning_effort` field override the default. Off by default.                                                                                                                                                                     |
+| `enableWebSearch`              | no       | Grant the CLI its built-in web search tool (`claude`'s `WebSearch`, `codex`'s `web_search`).                                                                                                                                                       |
+| `description`                  | no       | Free text, shown on the settings page only.                                                                                                                                                                                                        |
+
+[`config.example.json`](./config.example.json) (what a fresh `config.json` is seeded from)
+has working examples of each.
+
+### Environment variables
+
+Only three, all optional — everything else is in `config.json`. See `.env.example`.
+
+| Var             | Default                                                                       | Meaning                                                                                      |
+| --------------- | ----------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
+| `CONFIG_PATH`   | `./config.json` if one exists and is valid, else `~/.cli-wrapper/config.json` | Path to the config file.                                                                     |
+| `SETTINGS_PORT` | `8868`                                                                        | Settings page port. Deliberately not in `config.json`, so the settings page can't change it. |
+| `PORT`          | _(unset — uses `apiPort`, default `8869`)_                                    | Overrides the API port for this run only. Never affects `SETTINGS_PORT`.                     |
+
+## Using the API
+
+`/v1/chat/completions` and `/v1/models` are on the **API port** (`8869`) and need
+`Authorization: Bearer <apiKey>` unless you've blanked the key.
+
+```bash
+curl http://localhost:8869/v1/models -H "Authorization: Bearer $API_KEY"
+```
+
+Streaming works with `"stream": true` — Server-Sent Events ending in `data: [DONE]`.
+
+`temperature`, `max_tokens`, `top_p` and similar fields are accepted but ignored. With
+reasoning effort set, responses include `message.reasoning_content` (or
+`delta.reasoning_content` when streaming) whenever the CLI produced visible reasoning text.
 
 ### Attachments
 
@@ -196,10 +231,25 @@ User messages can use OpenAI's array-of-parts `content` shape to attach images a
       "role": "user",
       "content": [
         { "type": "text", "text": "What's in these?" },
-        { "type": "image_url", "image_url": { "url": "data:image/png;base64,iVBORw0..." } },
-        { "type": "image_url", "image_url": { "url": "/srv/shared/photo.jpg" } },
-        { "type": "file", "file": { "filename": "report.pdf", "file_data": "data:application/pdf;base64,JVBERi0..." } },
-        { "type": "file", "file": { "file_data": "file:///srv/shared/notes.md" } }
+        {
+          "type": "image_url",
+          "image_url": { "url": "data:image/png;base64,iVBORw0..." }
+        },
+        {
+          "type": "image_url",
+          "image_url": { "url": "/srv/shared/photo.jpg" }
+        },
+        {
+          "type": "file",
+          "file": {
+            "filename": "report.pdf",
+            "file_data": "data:application/pdf;base64,JVBERi0..."
+          }
+        },
+        {
+          "type": "file",
+          "file": { "file_data": "file:///srv/shared/notes.md" }
+        }
       ]
     }
   ]
@@ -210,173 +260,127 @@ User messages can use OpenAI's array-of-parts `content` shape to attach images a
   `http(s)` URLs are not fetched.
 - `file.file_data`: a base64 `data:` URL, raw base64, or a `file://` URL. `file_id` (OpenAI's
   Files API) isn't supported.
-- **Local paths only work under `localFileRoots`** (settings page; empty = disabled).
-  Symlinks are resolved before the check. Anyone holding the API key can have the model read
-  any file under these directories, so keep them narrow.
+- **Local paths only work under `localFileRoots`** (empty = disabled). Symlinks are resolved
+  before the check. Anyone holding the API key can have the model read any file under these
+  directories, so keep them narrow.
 - The type is detected from the file's bytes, not its name or declared mime type:
 
-  | Type                      | `claude`           | `codex`            |
-  | ------------------------- | ------------------ | ------------------ |
-  | PNG / JPEG / GIF / WebP   | native image input | native image input |
-  | PDF                       | native document    | rejected (400)     |
+  | Type                      | `claude`                | `codex`                 |
+  | ------------------------- | ----------------------- | ----------------------- |
+  | PNG / JPEG / GIF / WebP   | native image input      | native image input      |
+  | PDF                       | native document         | rejected (400)          |
   | Any other UTF-8 text file | inlined into the prompt | inlined into the prompt |
-  | Other binary files        | rejected (400)     | rejected (400)     |
+  | Other binary files        | rejected (400)          | rejected (400)          |
 
-- Limit is 20 MB per attachment, and 64 MB for the whole JSON request body. Each CLI's own
-  per-image limits are lower and show up as that CLI's own error.
-- Attachments are only allowed on `user` messages. `system`/`assistant` messages may use the
-  array shape, but with text parts only.
+- Limit is 20 MB per attachment, 64 MB for the whole request body. Each CLI's own per-image
+  limits are lower and show up as that CLI's own error.
+- Attachments are only allowed on `user` messages; other roles may use the array shape with
+  text parts only.
 - The activity log records an `[Image 1: name]` label for each attachment, never its bytes.
   Inlined text files are logged in full, like any other prompt text.
 
-Open `http://localhost:8868/settings` in a browser to edit server configuration and model
-mappings. Changes take effect immediately on the next API request — no restart needed
-(except **API port**).
+## Settings page panels
 
-The same page has a **Claude process pool** panel (auto-refreshing every 3s, `GET
-/api/settings/pool-status`) showing every live warm `claude` process — PID, model,
-reasoning effort, web search, busy/idle, and remaining uses before it retires — plus a
-summary of how many are running against the pool's cap and how many requests, if any, are
-queued waiting for a free one. By default `codex` has no persistent pool (a fresh process
-per request, so nothing to show, and the panel says so) — turning on `codexUseWarmPool`
-(see "Codex warm pool (experimental)" above) switches this to a **Codex daemon pool** panel
-instead, backed by `GET /api/settings/codex-pool-status`, showing each live `codex
-app-server` daemon's PID, in-flight turn count, and total turns served.
+Besides the settings and model routing forms, `http://localhost:8868/settings` shows:
 
-It also has a **Recent activity** panel (auto-refreshing every 4s) showing the last 200
-chat-completion requests — model, provider, streaming, status, duration, token usage, and
-error message where relevant. Each row has a **View** button showing the full prompt sent
-to the CLI and the full response text. Backed by `GET`/`DELETE /api/settings/logs`; it's
-in-memory only by default and resets on server restart — set a log file path on the
-settings page to persist it to disk instead (still capped at the last 200 entries, loaded
-back on the next start).
+- **Claude process pool** (refreshes every 3s, `GET /api/settings/pool-status`) — every live
+  warm `claude` process: PID, model, reasoning effort, web search, busy/idle, uses left
+  before it retires, plus how many requests are queued for a free slot.
+- **Codex daemon pool** (only when the codex warm pool is on,
+  `GET /api/settings/codex-pool-status`) — each `codex app-server` daemon's PID, in-flight
+  turns and turns served. With the pool off, codex runs a fresh process per request, so
+  there's nothing to show.
+- **Recent activity** (refreshes every 4s, `GET`/`DELETE /api/settings/logs`) — the last
+  200 requests: model, provider, streaming, status, duration, token usage, errors. **View**
+  on a row shows the full prompt and response (if content capture is on). In memory only
+  unless a log file path is set.
 
-> **This means full conversation content can sit in server memory, and optionally on
-> disk**, visible to anyone who can reach `/settings` (which, again, has no auth of its
-> own) — or, if a log file path is set, anyone with filesystem access to that path. Don't
-> run this somewhere sensitive conversations could be exposed by it. Turn off "store full
-> prompt/response text" on the settings page to keep the activity log to metadata only
-> (model, provider, status, duration, token counts) with no prompt/response text stored
-> anywhere, on disk or in memory. The settings page shows which modes are active.
+## Codex warm pool (experimental)
 
-## Install
+By default each `codex` request spawns a fresh `codex exec` process. Turning on
+`codexUseWarmPool` routes requests through a small pool of long-lived `codex app-server`
+daemons instead (`codexPoolSize`, default `2`). Each request still gets its own isolated,
+ephemeral thread, so nothing bleeds between requests; only the boot cost is saved. It also
+gives real token-by-token streaming, which the default path can't.
 
-The target machine needs Node.js and its own logged-in `claude`/`codex` CLIs (the same
-prerequisites as above) — this doesn't bundle a Node runtime or the CLIs themselves, only
-this wrapper. Either way you get the same thing: a `cli-wrapper-<version>.tgz` tarball you
-install with `npm install -g`.
+It's opt-in because `codex app-server`'s protocol has no compatibility promise across codex
+versions (the subcommand is still labeled `[experimental]`), so a codex upgrade could break
+it. Turning it off doesn't stop already-running daemons; they sit idle until restart. See
+`AGENTS.md`'s "Warm codex app-server pool" for the design.
 
-### Option A: download a release
+## Codex behind a proxy
 
-Every tag pushed as `vX.Y.Z` is built and published automatically by this repo's
-[Release workflow](.github/workflows/release.yml). Grab the `.tgz` asset from the
-[Releases page](../../releases) — no local build toolchain needed on the machine doing the
-downloading.
+If `HTTPS_PROXY` is set and your proxy rejects codex's WebSocket connection, every codex
+request wastes ~15–20s on retries before falling back to HTTPS. **Bypass HTTP proxy for
+OpenAI hosts** on the settings page adds `chatgpt.com`/`openai.com` to `NO_PROXY` for the codex process
+only (measured ~3x faster). Leave it off if your network only allows outbound traffic
+through the proxy — then bypassing it would break codex instead of speeding it up.
 
-### Option B: build it yourself
+## Security notes
 
-```sh
-npm run build   # or just `npm pack`, which runs this via its "prepack" script
-npm pack        # produces cli-wrapper-<version>.tgz
-```
-
-### Install on the target machine
-
-Copy the `.tgz` (downloaded or built) to the target machine (`scp`, a shared drive, an
-internal artifact store, however you move files there) and install it:
-
-```sh
-npm install -g ./cli-wrapper-0.1.0.tgz
-cli-wrapper
-```
-
-That installs a `cli-wrapper` command (from this package's `bin` entry) onto `PATH`. If the
-directory you run it from already has its own `config.json`, that's what it uses (same as
-running from a source checkout). Otherwise it creates `config.json` under `~/.cli-wrapper/`
-instead of scattering one into whatever directory you happened to run it from — same
-dotfolder the CLI working directory / activity log file (if enabled) already default under
-regardless of where you run it — see "Configuration" above. It seeds `config.json` and
-generates a fresh API key on first run, same as local `npm run dev`; no `.env` needed
-unless you want to override `CONFIG_PATH`, `PORT`, or `SETTINGS_PORT`. `npm install -g` also resolves and
-installs this package's own dependencies (`express`, `dotenv`) from the npm registry, so
-the target machine needs npm registry access (or an internal mirror/private registry) at
-install time — the tarball itself doesn't vendor them.
-
-No Node.js on the target machine at all, or want a single self-contained executable
-instead of an npm-installed command? That needs a different approach (bundling with
-esbuild + Node's Single Executable Application feature or a packager like `@yao-pkg/pkg`).
+- **`/settings` has no authentication, by design.** Anyone who can reach its port can read
+  and change the model routing and every setting — including the API key that guards
+  `/v1/*` — and read past prompts/responses in the activity log if capture is on. This is an
+  internal/personal-use tool. Its separate port lets you expose the API while keeping
+  settings on localhost, but that's a mitigation: put the settings port behind a network
+  boundary or an authenticating reverse proxy if it's ever reachable beyond a trusted host.
+- **Conversation content can sit in server memory, and optionally on disk.** Untick "Store
+  full prompt/response text in the activity log" to keep the activity log to metadata only. If a log file path
+  is set, treat that file as a secret.
+- **`localFileRoots`** lets anyone with the API key read files under those directories via
+  the model. Keep the list narrow, or empty.
 
 ## Notes / limitations
 
-- **Stateless from the outside, warm on the inside (claude only)**: every request still
-  gets a completely blank conversation and the full message history is still resent and
-  reprocessed every call — no client-visible behavior change and no cross-turn caching.
-  But under the hood, `claude`-routed requests reuse a small pool of already-running
-  `claude` processes instead of spawning a new one each time (each is sent a `/clear`
-  before every request, and retired after 20-30 requests so none runs forever). This cuts
-  the ~1-3s CLI boot/auth-check overhead most requests would otherwise pay. `codex`-routed
-  requests still spawn a fresh subprocess every time by default — see "Codex warm pool
-  (experimental)" above for the opt-in alternative, and AGENTS.md for why it isn't the
-  default the way claude's pool is.
-- **Claude warm-pool cap**: at most 20 `claude` processes run at once, shared across all
-  models routed to it (an idle one holds ~300MB RSS). A burst past that cap queues rather
-  than failing outright, bounded by the same CLI timeout as any other request — so under
-  heavy concurrent load a request may wait for a slot before it starts, rather than erroring
-  immediately. `codex`-routed requests have no such cap.
-- **Chat-only**: both CLIs run with tools/file/shell access disabled by default. `claude`
-  uses `--tools ""`; `codex` uses `--sandbox read-only`. Neither can modify your filesystem
-  or run commands via this wrapper. The one opt-in exception is the web search tool below.
-  `codex` requests also switch off everything from your own `~/.codex` setup (plugins,
-  skills, MCP servers, connected ChatGPT apps, hooks) and codex's own default-on extras,
-  including the web tool it otherwise enables on every request. See AGENTS.md gotcha #8,
-  and re-check it after upgrading codex.
-- **Unsupported OpenAI fields**: `temperature`, `max_tokens`, `top_p`, etc. are accepted in
-  the request body but ignored — the underlying CLIs don't expose equivalent controls
-  through this wrapper.
-- **Reasoning effort and content**: a model mapping can set a default reasoning effort
-  (`minimal` / `low` / `medium` / `high` / `xhigh` / `max` / `ultra`) on the settings page, and
-  optionally allow a request's own `reasoning_effort` field (same field name real OpenAI
-  reasoning models use) to override it for that call. Off by default — if a mapping hasn't
-  enabled the override, a `reasoning_effort` sent to it is silently ignored, same as any
-  other unsupported field above. When effort is requested, the response also includes a
-  `reasoning_content` field (`message.reasoning_content` non-streaming, `delta
-.reasoning_content` chunks streaming — the same field name DeepSeek/LiteLLM/Open WebUI
-  already use) whenever the underlying CLI produced any visible reasoning text. Note for
-  claude specifically: some accounts/plans redact the actual thinking text while still
-  billing the tokens for it — in that case `reasoning_content` just won't appear, even
-  though effort/cost was genuinely spent.
-- **Web search tool**: a model mapping can set `enableWebSearch: true` to grant its CLI a
-  real, built-in web search tool — `claude`'s `WebSearch` (executed server-side by
-  Anthropic) or `codex`'s `web_search` (executed server-side by OpenAI). Off by default: no
-  tools are available to either CLI unless a mapping opts in. This is a narrow, deliberate
-  exception to general tool use below, not a reversal of it — see AGENTS.md's "Web search
-  tool" section for the full investigation (why claude specifically needs
-  `--permission-mode bypassPermissions`, why codex needs nothing extra, and why neither
-  required any change to the response-parsing code to support).
-- **General tool use / function calling isn't supported** — not just unimplemented, but not
-  possible with these CLIs as invoked here: both run their tool loop to completion
-  internally and never hand an unexecuted call back out for a client to run and return a
-  result for, which real OpenAI/Anthropic function-calling requires. See AGENTS.md for how
-  this was verified.
-- **Codex streaming**: the Codex CLI doesn't emit token-level deltas, so a "streaming"
-  codex response arrives as a single content chunk followed by the completion signal,
-  rather than incremental text.
-- A hard timeout (the CLI timeout on the settings page, default 300000ms / 5 minutes) kills
-  any subprocess that runs too long, and subprocesses are also killed if the HTTP client
-  disconnects early.
+- **Stateless from the outside.** Every request starts a blank conversation and the full
+  message history is resent each call — no cross-turn caching. `claude` requests reuse warm
+  processes (sent `/clear` before each request, retired after 20–30 uses), which saves the
+  ~1–3s CLI boot. `codex` requests spawn a fresh process each time unless the codex warm pool
+  is on.
+- **Claude pool cap:** at most 20 `claude` processes at once across all models (~300MB RSS
+  each when idle). Bursts beyond that queue, bounded by the CLI timeout. `codex` has no cap.
+- **Chat-only.** `claude` runs with `--tools ""`; `codex` with `--sandbox read-only`.
+  Neither can change your filesystem or run commands through this wrapper. The one opt-in
+  exception is web search, which both providers run server-side. `codex` requests also
+  switch off everything from your own `~/.codex` setup (plugins, skills, MCP servers,
+  connected ChatGPT apps, hooks) and codex's own default-on extras — see AGENTS.md gotcha
+  #8, and re-check it after upgrading codex.
+- **No function calling / tool use.** Not just unimplemented — both CLIs run their tool
+  loop internally and never hand a call back to the client, which OpenAI function calling
+  requires. See AGENTS.md.
+- **Reasoning content on claude** may be redacted by some accounts/plans even though the
+  thinking tokens are billed; `reasoning_content` then just doesn't appear.
+- **Codex streaming (default path)** arrives as one content chunk per message rather than
+  token by token. The codex warm pool streams real token deltas.
+- A hard timeout (CLI timeout, default 5 min) kills any run that takes too long, and the CLI
+  process is also killed if the HTTP client disconnects early.
 
-## Environment variables
+## Building from source
 
-Only three — everything else moved to `config.json`/`/settings`, see "Configuration" above.
+```bash
+git clone https://github.com/tdpi95/cli-wrapper.git
+cd cli-wrapper
+npm install
+npm run dev        # runs from source with auto-reload; uses ./config.json
+```
 
-| Var             | Default                                                             | Meaning                                                                                                                              |
-| --------------- | ------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
-| `CONFIG_PATH`   | `./config.json` if valid, else `~/.cli-wrapper/config.json`        | Path to the config file (settings + model routing)                                                                                   |
-| `SETTINGS_PORT` | `8868`                                                              | Port the settings surface (`/settings`, `/api/settings/*`) listens on. Not in `config.json`, on purpose — see "Configuration" above. |
-| `PORT`          | _(unset — uses `config.json`'s `settings.apiPort`, default `8869`)_ | Overrides the API port for this run only. Never affects `SETTINGS_PORT`.                                                             |
+To produce the same installable tarball the Releases page ships:
+
+```bash
+npm pack           # builds, then writes cli-wrapper-<version>.tgz
+npm install -g ./cli-wrapper-<version>.tgz
+```
+
+Copy that `.tgz` to a machine without internet access to GitHub and install it the same way
+(it still needs npm registry access, or a mirror, to fetch `express`/`dotenv`). Every
+`vX.Y.Z` tag is built and attached to a GitHub Release automatically by
+[`.github/workflows/release.yml`](.github/workflows/release.yml).
+
+A single self-contained executable (for machines with no Node.js) isn't provided; it would
+need bundling with esbuild plus Node's Single Executable Application feature or
+`@yao-pkg/pkg`.
 
 ## More docs
 
-- [`AGENTS.md`](./AGENTS.md) — contributor/agent-facing guide: file map, conventions,
-  known gotchas hit during development, and open optimization ideas for future work.
-  `CLAUDE.md` links to it for Claude Code.
+- [`AGENTS.md`](./AGENTS.md) — contributor guide: file map, conventions, gotchas hit during
+  development, and open ideas for future work. `CLAUDE.md` links to it for Claude Code.
