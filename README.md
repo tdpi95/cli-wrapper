@@ -1,9 +1,10 @@
 # cli-wrapper
 
 Use your logged-in `claude` (Claude Code) and `codex` CLIs as an **OpenAI-compatible API**.
-Point any OpenAI SDK or tool at it and it just works — no separate model API key needed, it
-uses whatever `claude`/`codex` login is already on the machine. Chat only: the CLIs can't
-edit files or run commands through it.
+Point any OpenAI SDK or tool at it and it just works. Model calls go through the
+`claude`/`codex` login already on the machine, so you don't need an Anthropic or OpenAI API
+key. Your apps only need this wrapper's own API key, which it generates on first run. Chat
+only: the CLIs can't edit files or run commands through it.
 
 ## Quick start (5 minutes)
 
