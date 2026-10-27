@@ -563,8 +563,18 @@
           </select>
         </label>
         <label
-          >cliModel
-          <input type="text" name="cliModel" required />
+          ><span
+            >cliModel
+            <span class="hint" id="cli-model-hint"></span
+          ></span>
+          <input
+            type="text"
+            name="cliModel"
+            list="cli-model-options"
+            autocomplete="off"
+            required
+          />
+          <datalist id="cli-model-options"></datalist>
         </label>
         <label class="full"
           >extraFlags (comma-separated)
@@ -944,10 +954,54 @@
         select.value = previous && allValues.includes(previous) ? previous : "";
       }
 
-      form.provider.addEventListener("change", () =>
-        populateReasoningEffortOptions(),
-      );
+      // cliModel suggestions: what each CLI reports it can use (see
+      // /api/settings/available-models). The input stays free-text — a full
+      // model id, or anything the list missed, can still be typed.
+      const modelOptionsEl = document.getElementById("cli-model-options");
+      const modelHintEl = document.getElementById("cli-model-hint");
+      const availableModels = {};
+
+      async function loadAvailableModels(provider, refresh) {
+        if (availableModels[provider] && !refresh) return availableModels[provider];
+        try {
+          const r = await api(
+            `/api/settings/available-models?provider=${provider}${refresh ? "&refresh=1" : ""}`,
+          );
+          // A failed lookup isn't remembered, so the next provider change retries.
+          if (!r.error) availableModels[provider] = r;
+          return r;
+        } catch (err) {
+          return { provider, models: [], error: err.message };
+        }
+      }
+
+      async function populateModelOptions(refresh) {
+        const provider = form.provider.value;
+        modelHintEl.textContent = "(loading suggestions…)";
+        const r = await loadAvailableModels(provider, refresh);
+        // The provider may have been switched while the request was in flight.
+        if (form.provider.value !== provider) return;
+        modelOptionsEl.innerHTML = r.models
+          .map((m) => {
+            const note = [m.isDefault ? "default" : "", m.hidden ? "hidden" : ""]
+              .filter(Boolean)
+              .join(", ");
+            return `<option value="${escapeHtml(m.id)}">${escapeHtml(note)}</option>`;
+          })
+          .join("");
+        modelHintEl.textContent = r.error
+          ? `(couldn't list models: ${r.error} — type one in)`
+          : r.source === "static"
+            ? "(known aliases; a full model id also works)"
+            : `(${r.models.length} available on this account; or type one in)`;
+      }
+
+      form.provider.addEventListener("change", () => {
+        populateReasoningEffortOptions();
+        populateModelOptions();
+      });
       populateReasoningEffortOptions();
+      populateModelOptions();
 
       function setStatus(msg) {
         statusEl.textContent = msg || "";
@@ -990,6 +1044,7 @@
       function resetForm() {
         form.reset();
         populateReasoningEffortOptions();
+        populateModelOptions();
         editingId = null;
         submitBtn.textContent = "Add";
         formTitle.textContent = "Add model mapping";
@@ -1047,6 +1102,7 @@
           editingId = id;
           form.id.value = m.id;
           form.provider.value = m.provider;
+          populateModelOptions();
           form.cliModel.value = m.cliModel;
           form.extraFlags.value = (m.extraFlags || []).join(", ");
           populateReasoningEffortOptions(m.reasoningEffort || "", true);

@@ -5,6 +5,7 @@ import { toApiError } from "../errors.js";
 import { clearLogEntries, getLogEntries, getLogPersistPath, isLogPersistenceEnabled, setLogPersistPath } from "../logs.js";
 import { getPoolStatus } from "../process/claudePool.js";
 import { getCodexPoolStatus } from "../process/codexAppServer.js";
+import { discoverModels } from "../process/modelDiscovery.js";
 
 // No auth on any route in this file, by design — see the note in app.ts.
 export function settingsRouter(publicDir: string): Router {
@@ -74,6 +75,17 @@ export function settingsRouter(publicDir: string): Router {
       const { status, body } = toApiError(err);
       res.status(status).json(body);
     }
+  });
+
+  // Models the given CLI can use, for the cliModel dropdown. ?refresh=1
+  // bypasses the codex list's cache. See AGENTS.md's "Model discovery".
+  router.get("/api/settings/available-models", async (req, res) => {
+    const provider = req.query.provider;
+    if (provider !== "claude" && provider !== "codex") {
+      res.status(400).json({ error: { message: "provider must be 'claude' or 'codex'", type: "invalid_request" } });
+      return;
+    }
+    res.json(await discoverModels(provider, req.query.refresh === "1"));
   });
 
   router.get("/api/settings/logs", (_req, res) => {

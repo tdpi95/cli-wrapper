@@ -64,6 +64,8 @@ src/
     codexAppServer.ts warm `codex app-server` daemon pool for codex — EXPERIMENTAL, opt-in
                      via codexUseWarmPool (default false); see its top-of-file comment and
                      the "Warm codex app-server pool" section below
+    modelDiscovery.ts  cliModel dropdown's data: codex's `model/list` via a throwaway
+                     `codex app-server`, claude's fixed alias list — see "Model discovery"
     codexProxyBypass.ts codexBypassProxyForOpenAI's NO_PROXY-widening logic, shared by
                      codex.ts's exec path and codexAppServer.ts's daemon spawn
     codexIsolation.ts  config overrides that switch off the operator's ~/.codex plugins/
@@ -672,6 +674,24 @@ Protocol details for the app-server path (verified live, easy to get wrong):
   `item/reasoning/summaryTextDelta` stream. Same class of issue, only reachable with
   `reasoningEffort` set; the exec path already joins reasoning items with `"\n\n"`.
 
+## Model discovery (`process/modelDiscovery.ts`)
+
+`GET /api/settings/available-models?provider=claude|codex[&refresh=1]` feeds a `<datalist>`
+on the settings form's cliModel input (re-populated on provider change, on edit and on
+reset). The input stays free-text: a datalist only suggests.
+
+- **codex**: asks the installed CLI, so the list is the logged-in account's real one (gotcha
+  #4). Spawns its own short-lived `codex app-server` (isolation args + proxy bypass, like the
+  pool's daemons), does the handshake, calls `model/list` with `includeHidden: true`, kills
+  it. Deliberately not the warm pool's daemon: the pool is opt-in. Hidden models are listed
+  and tagged "hidden". Cached 10 minutes (spawning costs seconds); failures aren't cached;
+  concurrent callers share one spawn; `refresh=1` bypasses the cache.
+- **claude**: no introspection exists, so a fixed list (`fable`/`opus`/`sonnet`/`haiku`,
+  the aliases `claude --help` documents). A full model id also works; type it in.
+- On failure the response has `error` and an empty `models`; the UI says so and leaves the
+  input usable.
+- The response also carries each model's `supportedReasoningEfforts`; the UI doesn't use it yet.
+
 ## Reasoning effort control and content (`ModelMapping.reasoningEffort`/`allowReasoningEffortOverride`)
 
 A model mapping can set a default reasoning effort and optionally let a per-request
@@ -981,19 +1001,9 @@ bullet below.
   instead.
 
 ### Features
-- **Model discovery instead of hand-maintained `config.json`.** Could shell out to `codex
-  features list` / introspect `claude`'s available model aliases at startup (or on-demand
-  from the settings UI) to suggest valid `cliModel` values instead of requiring the
-  operator to already know them — would have caught gotcha #4 automatically.
-  Note: as of Codex CLI 0.146.0, `features list` only enumerates feature flags, not model
-  ids. The working introspection point is `codex app-server`'s `model/list` JSON-RPC
-  method (after the usual `initialize`/`initialized` handshake; `includeHidden: true` adds
-  hidden models): it returns each model's id, `isDefault`, `supportedReasoningEfforts`,
-  `defaultReasoningEffort` and `inputModalities`. It's the account's real list, not a
-  hardcoded catalog. claude has no equivalent: `--help` only documents the
-  `fable`/`opus`/`sonnet` aliases (plus `haiku`, which works too). The only reliable check is
-  a one-line `claude -p --model <x> --output-format json` call, reading the resolved id
-  from `modelUsage`. That's how the mappings added on 2026-09-25 were verified.
+- **Model discovery — done for the settings page's cliModel dropdown, see "Model
+  discovery" below.** Still open: using the per-model `supportedReasoningEfforts` it
+  returns to narrow the reasoning-effort dropdown, and validating `cliModel` server-side.
 - **`stream_options.include_usage` support** — currently not implemented; usage is only
   returned in non-streaming responses, matching baseline OpenAI behavior but not the
   opt-in extension some clients use.
